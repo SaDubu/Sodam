@@ -1,39 +1,61 @@
-"""Typed domain contracts shared by the backend layers.
+"""Domain contracts for Sodam — immutable data schemas and exception hierarchy.
 
-The data classes describe values only.  Validation, persistence, serialization,
-and state-transition logic belong to their separately scheduled modules.
+This module defines only types, exception classes, and frozen dataclass
+contracts. It performs NO input validation, I/O, or external calls at
+import time.
 """
-
-from dataclasses import dataclass, field
-from pathlib import Path
+import pathlib
+from dataclasses import dataclass
 from typing import Literal
 
+
+# ---- type alias ----
+
 JobStatus = Literal[
-    "queued", "acquiring", "extracting", "transcribing", "normalizing",
-    "correcting", "reviewing", "summarizing", "completed", "cancelling",
-    "cancelled", "failed", "cleaning", "archived",
+    "queued",
+    "acquiring",
+    "extracting",
+    "transcribing",
+    "normalizing",
+    "correcting",
+    "reviewing",
+    "summarizing",
+    "completed",
+    "cancelling",
+    "cancelled",
+    "failed",
+    "cleaning",
+    "archived",
 ]
 
 
+# ---- exception hierarchy ----
+
 class SodamError(Exception):
-    """Base exception for a documented Sodam contract violation."""
+    """Base exception for all domain errors."""
 
 
 class InputSourceError(SodamError):
-    """Raised when a submitted source cannot be accepted."""
+    """Raised when the input source is invalid or unsupported."""
 
 
 class UnsafePathError(SodamError):
-    """Raised when an operation would escape its job-owned directory."""
+    """Raised when a path attempts to leave the job's dedicated directory."""
 
 
 class ModelResponseError(SodamError):
-    """Raised when a model result violates the documented response schema."""
+    """Raised when a model response violates the expected schema."""
 
+
+# ---- immutable data classes ----
 
 @dataclass(frozen=True)
 class JobOptions:
-    """User-selected, serializable job options; defaults are not chosen yet."""
+    """Configuration flags for a transcription job.
+
+    All fields default to None so callers can omit anything they do not
+    wish to configure.
+    """
 
     retain_raw_transcript: bool | None = None
     retain_result: bool | None = None
@@ -42,27 +64,49 @@ class JobOptions:
 
 @dataclass(frozen=True)
 class Job:
-    """A job identity, source reference, state, and owned temporary directory."""
+    """Immutable record of a transcription job.
+
+    Attributes:
+        job_id: Unique identifier for this job.
+        source: Human-readable description or URI of the input source.
+        status: Current lifecycle state (JobStatus).
+        work_dir: Path to the temporary directory owned by this job.
+        options: Optional tuning parameters controlling retention and lookup.
+    """
 
     job_id: str
     source: str
     status: JobStatus
-    work_dir: Path
+    work_dir: pathlib.Path
     options: JobOptions
 
 
 @dataclass(frozen=True)
 class AudioArtifact:
-    """A normalized audio artifact owned by exactly one job."""
+    """A raw or intermediate audio file extracted from a job.
+
+    Attributes:
+        job_id: Parent Job.job_id.
+        path: Absolute or relative file system path to the audio chunk.
+        duration_seconds: Duration in seconds (None when unknown).
+    """
 
     job_id: str
-    path: Path
+    path: pathlib.Path
     duration_seconds: float | None = None
 
 
 @dataclass(frozen=True)
 class RawSegment:
-    """An STT text segment with its immutable source timing."""
+    """A single raw transcript segment with temporal metadata.
+
+    Attributes:
+        segment_id: Unique identifier for the segment.
+        start_seconds: Start timestamp in seconds (inclusive).
+        end_seconds: End timestamp in seconds (exclusive).
+        raw_text: The verbatim text produced by the STT engine.
+        confidence: Confidence score returned by the STT engine (None when unavailable).
+    """
 
     segment_id: str
     start_seconds: float
@@ -73,7 +117,12 @@ class RawSegment:
 
 @dataclass(frozen=True)
 class ProtectedText:
-    """Text containing placeholders and the reversible protected-value table."""
+    """Text containing placeholders and the reversible protected-value table.
+
+    Attributes:
+        text: Text in which protected values are represented by placeholders.
+        replacements: Mapping used to restore each protected value exactly.
+    """
 
     text: str
     replacements: dict[str, str]
@@ -81,7 +130,13 @@ class ProtectedText:
 
 @dataclass(frozen=True)
 class RuleNormalizedText:
-    """Protected text after the restricted rules-only normalization stage."""
+    """Protected text after the restricted rules-only normalization stage.
+
+    Attributes:
+        text: The fully normalized string.
+        sentence_boundaries: Sentence-boundary positions in text. Empty tuple
+            means the caller did not request them.
+    """
 
     text: str
     sentence_boundaries: tuple[int, ...] = ()
@@ -89,7 +144,13 @@ class RuleNormalizedText:
 
 @dataclass(frozen=True)
 class CorrectionResult:
-    """Schema-validated correction for one or more adjacent source segments."""
+    """Glossary correction result with change tracking.
+
+    Attributes:
+        corrected_text: The text after applying all corrections.
+        changes: Ordered list of old-to-new dicts describing each substitution.
+        requires_review: True when a human should inspect the output before publishing.
+    """
 
     corrected_text: str
     changes: tuple[dict[str, str], ...] = ()
@@ -98,7 +159,12 @@ class CorrectionResult:
 
 @dataclass(frozen=True)
 class ReviewResult:
-    """Validated revision with changes safe to apply and changes for review."""
+    """Human review result after examining a correction batch.
+
+    Attributes:
+        approved_text: The final text after the reviewer's acceptance.
+        review_items: Per-item records containing the reviewer's notes or approvals.
+    """
 
     approved_text: str
     review_items: tuple[dict[str, str], ...] = ()
@@ -106,7 +172,12 @@ class ReviewResult:
 
 @dataclass(frozen=True)
 class Transcript:
-    """Final transcript retaining source segments and a time-addressable index."""
+    """Aggregation of all segments into a single textual output.
+
+    Attributes:
+        segments: Ordered tuple of RawSegment instances (chronological by start).
+        final_text: Concatenated text of all segments for quick consumption.
+    """
 
     segments: tuple[RawSegment, ...]
     final_text: str
@@ -114,7 +185,12 @@ class Transcript:
 
 @dataclass(frozen=True)
 class Summary:
-    """A two-sentence-or-fewer summary and the supporting source segment IDs."""
+    """AI-generated summary with verifiable evidence.
+
+    Attributes:
+        text: The generated summary string.
+        evidence_segment_ids: Tuple of segment_id values that support the summary claims.
+    """
 
     text: str
     evidence_segment_ids: tuple[str, ...]
@@ -122,7 +198,12 @@ class Summary:
 
 @dataclass(frozen=True)
 class CleanupReport:
-    """A read-only report of artifacts selected for retention or removal."""
+    """Post-job cleanup report for the temporary work_dir.
 
-    retained: tuple[Path, ...] = ()
-    removed: tuple[Path, ...] = ()
+    Attributes:
+        retained: Paths that were explicitly kept (e.g., user-specified retention).
+        removed: Paths that were safely deleted by the cleanup routine.
+    """
+
+    retained: tuple[pathlib.Path, ...] = ()
+    removed: tuple[pathlib.Path, ...] = ()
