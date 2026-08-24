@@ -1,0 +1,43 @@
+# Sodam 구현 순서 및 작업 추적
+
+> 상태: 골격 작성 완료 전 계획. 실제 구현은 별도 명시 승인이 있을 때, 한 작업씩 `Statement_of_Functions.md`에 명세한 뒤 진행한다.
+
+## 작업 상태 기준
+
+- **골격 완료**: 선언·docstring·`NotImplementedError`만 존재하며 실제 기능과 검증 로직은 없다.
+- **구현 완료**: 해당 작업의 테스트 도구와 테스트 코드가 작성되고, 정의된 자동·수동 기준을 모두 통과한 상태다.
+- 구현 시작 전에는 반드시 아래 표에서 선행 작업이 완료된 가장 이른 작업을 하나만 선택한다.
+
+| ID | 종류 | 대상 / 이름 | 선행 작업 | 목적·상세 동작 | 수정 허용 범위 | 금지 범위 | 테스트 방법 | 완료 판정 기준 |
+|---|---|---|---|---|---|---|---|---|
+| D01 | 문서화 | `docs/ai/04-implementation-order.md` | 없음 | 작업 의존성과 완료 기준을 관리한다. | 이 문서 | 제품 코드 | 문서 검토 | 모든 작업이 추적 가능하다. |
+| B01 | 함수 구현 | `backend/contracts.py`: 도메인 타입·예외 | D01 | Job, Segment, Transcript, Summary와 오류 계약을 확정한다. | `backend/contracts.py`, 관련 테스트 | 저장·모델 호출 | 타입 계약 단위 테스트 | 모든 타입 직렬화/불변식 계약이 통과한다. |
+| T01 | 테스트 도구 구현 | `tests/fakes.py`, fixture 생성기 | B01 | 저장소, STT, 모델, 다운로드, FFmpeg의 fake를 제공한다. | `tests/`, `tools/` | 실제 외부 도구 | fake 계약 테스트 | 실제 네트워크/모델 없이 결정론적으로 동작한다. |
+| B02 | 함수 구현 | `backend/jobs.py`: `create_job`, 상태 전이, 취소 | B01, T01 | 입력을 검증하고 안전한 작업 상태를 관리한다. | `backend/jobs.py`, `backend/contracts.py` | 음성 획득·DB 실제 연결 | `test_jobs.py` | queued 생성, 유효 상태 전이, 잘못된 입력 예외가 통과한다. |
+| B03 | 함수 구현 | `backend/storage.py`: 저장·정리 | B01, T01 | JSON/SQLite 저장 추상화 및 작업 폴더 한정 정리를 구현한다. | `backend/storage.py`, 관련 테스트 | 작업 폴더 밖 삭제 | `test_storage.py` | 경로 안전성, 보관 정책, 삭제 경계가 통과한다. |
+| B04 | 함수 구현 | `backend/sources.py`: `validate_source`, `acquire_source_audio` | B02, B03, T01 | 지원 URL을 판정하고 어댑터로 음성을 획득한다. | `backend/sources.py`, 관련 테스트 | 무단 URL 처리, 실제 기본 다운로드 | `test_sources.py` + fake | 원본 미디어 정리와 오류 매핑이 통과한다. |
+| B05 | 함수 구현 | `backend/media.py`: `extract_audio` | B02, B03, T01 | 미디어 입력을 표준 오디오로 변환한다. | `backend/media.py`, 관련 테스트 | 작업 폴더 밖 쓰기 | `test_media.py` + FFmpeg fake | 형식·길이 계약 및 오류 매핑이 통과한다. |
+| B06 | 함수 구현 | `backend/transcription.py`: `transcribe_audio` | B01, T01 | STT 출력을 유효한 시간 구간으로 표준화한다. | `backend/transcription.py`, 관련 테스트 | 실제 모델 기본 실행 | `test_transcription.py` + STT fake | 시간 단조성·빈 텍스트 처리 계약이 통과한다. |
+| B07 | 함수 구현 | `backend/protection.py`: `protect_tokens`, `restore_tokens` | B01, T01 | 보호값을 충돌 없는 자리표시자로 왕복 변환한다. | `backend/protection.py`, 관련 테스트 | 원문 값 변경 | `test_protection.py` | 보호 토큰 100% 복원 테스트가 통과한다. |
+| B08 | 함수 구현 | `backend/text_rules.py`: `normalize_rules` | B07, T01 | 문자 보존 조건 아래 공백·명백한 문장부호만 정리한다. | `backend/text_rules.py`, 관련 테스트 | 의미/사실 변경 | `test_text_rules.py` + Kiwi fake | 비공백 문자·보호 토큰 보존이 통과한다. |
+| B09 | 함수 구현 | `backend/correction.py`: `correct_chunk` | B01, B07, T01 | 모델 요청/응답 JSON을 검증하고 교정 결과를 만든다. | `backend/correction.py`, 관련 테스트 | 자유 형식 모델 출력 허용 | `test_correction.py` + Qwen fake | 스키마·길이·오류 처리 계약이 통과한다. |
+| B10 | 함수 구현 | `backend/validation.py`: `validate_revision` | B01, B07, B09, T01 | 안전 변경과 검수 필요 변경을 분류한다. | `backend/validation.py`, 관련 테스트 | 위험 변경 자동 확정 | `test_validation.py` | 보호값 손실/위험 변경 차단이 통과한다. |
+| B11 | 함수 구현 | `backend/storage.py`: `assemble_transcript` | B01, B03, B10, T01 | 시간순 구간으로 전사문·색인을 조립해 저장한다. | `backend/storage.py`, 관련 테스트 | 누락/중복 자동 보정 | `test_transcript.py` | ID 고유성·시간 순서·조회 계약이 통과한다. |
+| B12 | 함수 구현 | `backend/summarization.py`: `summarize_transcript` | B01, B09, B11, T01 | 계층형 요약과 근거 구간 연결을 수행한다. | `backend/summarization.py`, 관련 테스트 | 근거 없는 사실 추가 | `test_summarization.py` + Qwen fake | 2문장 이하와 근거 ID 규칙이 통과한다. |
+| B13 | 함수 구현 | `backend/main.py`: 작업 파이프라인 조립 | B02–B12 | 순차 모델 실행과 실패/취소 정리를 오케스트레이션한다. | `backend/main.py`, 통합 테스트 | UI·외부 서비스 직접 구현 | fake 기반 통합 테스트 | 상태 전이와 정리 경로가 통과한다. |
+| U01 | 함수 구현 | `apps/desktop/`: UI 상태·표시 계층 | B13 | 입력, 진행도, 검수 큐, 결과 표시를 연결한다. | `apps/desktop/`, UI 테스트 | 모델/미디어 로직 중복 | 수동 UI 점검 | 시간 링크와 위험 변경 표시가 정확하다. |
+| T02 | 테스트 코드 구현 | `tests/unit/` | B02–B12, T01 | 함수별 정상·경계·오류 사례를 자동화한다. | `tests/unit/`, fixtures | 실모델/실다운로드 의존 | `pytest tests/unit -q` | 설계서의 함수별 자동 기준을 모두 통과한다. |
+| T03 | 테스트 도구 구현 | `tools/evaluate_transcript.py` | B10–B12 | 교정 정확도·위험 변경률·처리 시간을 측정한다. | `tools/`, `tests/fixtures/` | 제품 파이프라인 변경 | fixture CLI 실행 | 지표와 비교 결과를 재현 가능하게 출력한다. |
+| T04 | 테스트 도구 구현 | `tools/inspect_job.py` | B03, B11, B12 | JSON·타임스탬프·검수 큐를 사람이 점검한다. | `tools/` | 사용자 데이터 수정 | 샘플 작업 CLI 점검 | 읽기 전용 점검 결과가 명확하다. |
+| T05 | 테스트 코드 구현 | `tests/integration/` | B13, T01–T04 | 성공·실패·취소·비정상 종료 정리 흐름을 검증한다. | `tests/integration/` | 외부 URL·실모델 필수화 | `pytest tests/integration -q` | 작업 폴더 밖 삭제 0건이 통과한다. |
+| O01 | 함수 구현 | `scripts/setup-models.ps1`: `install_models` | B01, T01 | manifest 검증과 저장소 밖 설치를 구현한다. | `scripts/`, `models/`, 관련 테스트 | 실제 기본 다운로드, Git 트리 내 설치 | 다운로드 fake 테스트 | 체크섬·경로 거부 계약이 통과한다. |
+| O02 | 함수 구현 | `scripts/check-repository-clean.ps1`: `check_repository_clean` | T01 | 추적 파일 정책을 검사한다. | `scripts/`, 관련 테스트 | 파일 자동 삭제 | Git fake 테스트 | 금지 확장자·대용량·비밀 패턴이 차단된다. |
+| O03 | 문서화 | `README.md`, `models/manifest.json`, Git 정책 | O01, O02 | 확정된 런타임·모델·운영 방법을 문서화한다. | 문서·manifest·ignore 파일 | 미확정 모델값 고정 | 새 PC 수동 검증 | 모델과 사용자 데이터가 Git 밖에 유지된다. |
+
+## 구현 작업의 고정 절차
+
+각 B/T/U/O 작업은 시작할 때마다 `Statement_of_Functions.md`를 초기화하고, 해당 작업 하나의 완전한 명세만 작성한다. 로컬 LLM에는 다음 지시문만 사용한다.
+
+> `Statement_of_Functions.md`를 먼저 읽어라. 명세에 적힌 작업만 구현하라. 명세에 없는 파일이나 기능은 수정하지 마라. 구현 후 명세에 적힌 테스트를 실행하라. 테스트 결과, 수정한 파일, 남은 위험 요소를 보고하라. 커밋과 푸시는 하지 마라.
+
+완료 결과와 테스트 근거는 이 문서의 해당 작업에 기록한다. 커밋, 푸시, 실제 외부 호출, 실제 함수/테스트 로직은 각각 별도 명시 승인이 필요하다.
