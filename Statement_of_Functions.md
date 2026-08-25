@@ -1,148 +1,158 @@
-# 작업 명세: T01 — 결정론적 테스트 Fake와 Fixture 생성기
+# 작업 명세: B02 — 작업 생성, 상태 전이, 취소 요청
 
 ## 1. 작업 식별
 
-- **작업 ID:** T01
-- **작업 종류:** 테스트 도구 구현
-- **선행 작업:** B01 (도메인 타입·예외 계약) 완료
-- **대상 파일:** `tests/fakes.py`, `tests/fixture_factories.py`
+- **작업 ID:** B02
+- **작업 종류:** 함수 구현
+- **선행 작업:** B01(도메인 계약), T01(결정론적 fake·fixture 도구) 완료
+- **대상 파일:** `backend/jobs.py`, `backend/contracts.py`
 - **허용되는 보조 수정 파일:** 없음
 
 ## 2. 목적과 책임
 
-실제 STT 엔진, Qwen 런타임, 파일 시스템, 모델, 네트워크를 사용하지 않고도 후속 단위·통합 테스트가 결정론적으로 의존성을 대체할 수 있게 한다. 또한 B01의 도메인 계약을 손쉽게 생성하는 fixture factory를 제공한다.
+외부 미디어 획득·STT·저장소·DB를 호출하지 않고, 새 작업의 불변 `Job` 객체를 만들고 안전한 상태 전이와 취소 요청을 표현한다. 실제 데이터베이스 기록과 전용 작업 디렉터리 생성은 B03 및 후속 오케스트레이션 작업의 책임이다.
 
-이 작업은 제품 코드, 실제 테스트 함수, 실제 fixture 데이터 파일, 실제 미디어/모델, 파일 삭제, 네트워크 및 subprocess 호출을 구현하지 않는다.
+생성된 `Job.work_dir`은 Git 작업 트리 밖의 기본 경로 `D:\AI-Legion\Sodam-data\tmp\jobs\<job_id>`를 **가리키기만** 한다. 이 작업은 해당 경로 또는 그 부모 경로를 만들거나 삭제하지 않는다.
 
-## 3. 구현 대상과 함수 시그니처
+## 3. 구현 대상과 시그니처
 
-### `tests/fakes.py`
+### `backend/contracts.py`
 
-표준 라이브러리만 사용한다. 각 fake는 공개 기록 필드를 통해 호출을 검사할 수 있어야 한다.
-
-```python
-class FakeSttEngine:
-    def __init__(self, responses: dict[str, object] | None = None, default_response: object | None = None, error: Exception | None = None) -> None: ...
-    def transcribe(self, audio_path: str) -> object: ...
-
-class FakeQwenRuntime:
-    def __init__(self, responses: dict[str, str] | None = None, default_response: str = "", error: Exception | None = None) -> None: ...
-    def complete(self, prompt: str) -> str: ...
-
-class FakeFileSystem:
-    def __init__(self, existing_paths: set[str] | None = None, error_paths: set[str] | None = None) -> None: ...
-    def remove(self, path: str) -> None: ...
-```
-
-각 인스턴스는 다음 공개 기록 필드를 가져야 한다.
-
-| 클래스 | 기록 필드 | 사후 조건 |
-|---|---|---|
-| `FakeSttEngine` | `transcribed_paths: list[str]` | `transcribe`가 호출될 때마다 입력 경로가 한 번 추가된다. |
-| `FakeQwenRuntime` | `prompts: list[str]` | `complete`가 호출될 때마다 입력 프롬프트가 한 번 추가된다. |
-| `FakeFileSystem` | `existing_paths: set[str]`, `removed_paths: list[str]` | 성공한 `remove`는 대상 경로를 `existing_paths`에서 제거하고 `removed_paths`에 한 번 추가한다. |
-
-동작 규칙:
-
-1. `FakeSttEngine.transcribe`는 먼저 경로를 기록한다. 생성자 `error`가 있으면 **동일한 예외 객체**를 raise한다. 그렇지 않으면 `responses[audio_path]`가 있으면 반환하고, 없으면 `default_response`를 반환한다.
-2. `FakeQwenRuntime.complete`는 먼저 프롬프트를 기록한다. 생성자 `error`가 있으면 **동일한 예외 객체**를 raise한다. 그렇지 않으면 `responses[prompt]`가 있으면 반환하고, 없으면 `default_response`를 반환한다.
-3. `FakeFileSystem.remove`는 `path`가 `error_paths`에 있으면 `OSError`를 raise하고 어떠한 기록도 변경하지 않는다. 그렇지 않고 `path`가 `existing_paths`에 없으면 `FileNotFoundError(path)`를 raise하고 어떠한 기록도 변경하지 않는다. 성공 시에만 위 표의 사후 조건을 만족한다.
-4. 생성자 인자는 복사해 보관한다. 호출자가 이후 원본 dict/set을 바꿔도 fake 내부 상태가 변하면 안 된다.
-5. 응답 객체는 반환 전에 복사하거나 변형하지 않는다.
-
-### `tests/fixture_factories.py`
-
-`backend.contracts`에서 타입만 import한다. 시간, UUID, 임시 폴더, 환경 변수, 실제 파일 시스템을 사용하지 않는다.
+아래 예외 하나를 `SodamError`의 직접 하위 클래스로 추가한다.
 
 ```python
-def make_job_options(**overrides: object) -> JobOptions: ...
-def make_job(**overrides: object) -> Job: ...
-def make_raw_segment(**overrides: object) -> RawSegment: ...
-def make_transcript(**overrides: object) -> Transcript: ...
+class JobStateError(SodamError):
+    """Raised when a requested Job status transition is not permitted."""
 ```
 
-| 함수 | 기본 생성값 |
+예외 선언 외에는 기존 데이터 클래스·타입 별칭·기존 예외의 필드, 상속 구조, 동작을 변경하지 않는다.
+
+### `backend/jobs.py`
+
+다음 이름을 구현한다.
+
+```python
+def create_job(source: str, options: JobOptions) -> Job: ...
+def transition_job(job: Job, target_status: JobStatus) -> Job: ...
+def request_cancellation(job: Job) -> Job: ...
+```
+
+`dataclasses.replace`, `pathlib.Path`, `urllib.parse.urlparse`, `uuid.uuid4`와 `backend.contracts`의 `InputSourceError`, `JobStateError`, `Job`, `JobOptions`, `JobStatus`만 사용한다.
+
+## 4. 함수 계약
+
+### `create_job(source, options) -> Job`
+
+- **입력:** 비어 있지 않은 `str` source와 `JobOptions` 인스턴스
+- **출력:** 새 UUID hex 문자열 `job_id`, 정규화 source, `status="queued"`, 작업 외부 기본 경로, 제공된 `options`를 갖는 frozen `Job`
+- **사전 조건:** `options`는 `JobOptions`여야 한다.
+- **정상 source:**
+  - `http` 또는 `https` URL이며 hostname이 비어 있지 않은 경우. URL 문자열의 앞뒤 공백은 제거해 저장한다.
+  - 존재하고 일반 파일인 로컬 경로. `Path.expanduser().resolve(strict=True)` 결과의 문자열을 저장한다.
+- **예외:**
+  - source가 `str`이 아니거나 공백뿐이면 `InputSourceError`
+  - `options`가 `JobOptions`가 아니면 `TypeError`
+  - URL의 scheme이 `http`/`https`가 아니거나 hostname이 없으면 `InputSourceError`
+  - 로컬 경로가 없거나 디렉터리이면 `InputSourceError`
+- **부수 효과:** 없음. 디렉터리/파일 생성·삭제, DB 기록, 네트워크, subprocess 호출 금지.
+- **사후 조건:** 반환 job은 `queued` 상태이며 `work_dir.name == job_id`이고, work_dir의 부모는 정확히 `Path(r"D:\AI-Legion\Sodam-data\tmp\jobs")`다.
+
+### `transition_job(job, target_status) -> Job`
+
+- **입력:** `Job`과 유효한 `JobStatus` 문자열
+- **출력:** target 상태로 바뀐 새 frozen `Job`; 입력 `job`은 변경하지 않는다.
+- **예외:** job이 `Job`이 아니거나 target이 유효하지 않으면 `TypeError`; 아래 표에 없는 전이는 `JobStateError`.
+- **부수 효과:** 없음.
+
+허용 전이는 다음뿐이다.
+
+| 현재 상태 | 허용 target 상태 |
 |---|---|
-| `make_job_options` | `JobOptions()` |
-| `make_job` | `job_id="job-001"`, `source="fixture://source"`, `status="queued"`, `work_dir=Path("fixture-work")`, `options=make_job_options()` |
-| `make_raw_segment` | `segment_id="segment-001"`, `start_seconds=0.0`, `end_seconds=1.0`, `raw_text="fixture text"`, `confidence=None` |
-| `make_transcript` | `segments=(make_raw_segment(),)`, `final_text="fixture text"` |
+| `queued` | `acquiring`, `cancelling`, `failed` |
+| `acquiring` | `extracting`, `cancelling`, `failed` |
+| `extracting` | `transcribing`, `cancelling`, `failed` |
+| `transcribing` | `normalizing`, `cancelling`, `failed` |
+| `normalizing` | `correcting`, `cancelling`, `failed` |
+| `correcting` | `reviewing`, `cancelling`, `failed` |
+| `reviewing` | `summarizing`, `cancelling`, `failed` |
+| `summarizing` | `completed`, `cancelling`, `failed` |
+| `cancelling` | `cancelled`, `failed` |
+| `completed` | `cleaning` |
+| `cancelled` | `cleaning` |
+| `failed` | `cleaning` |
+| `cleaning` | `archived` |
+| `archived` | 없음 |
 
-Factory 공통 규칙:
+동일 상태로의 전이는 허용하지 않는다.
 
-1. `overrides`의 키는 대상 dataclass의 필드명이어야 한다.
-2. 알 수 없는 키는 dataclass 생성자가 발생시키는 `TypeError`를 그대로 전파한다.
-3. `make_job`의 `options` 기본값은 호출마다 새 `JobOptions` 인스턴스여야 한다.
-4. `make_transcript`의 `segments` 기본값은 호출마다 새 tuple을 생성한다.
-5. 입력 검증, 변환, I/O, 무작위 값 생성은 하지 않는다.
+### `request_cancellation(job) -> Job`
 
-## 4. 입력, 반환, 예외, 사전·사후 조건
-
-- **입력:** 위 시그니처의 생성자·메서드 인자와 factory override 키워드 인자
-- **반환:** 설정된 fake 응답 또는 B01 도메인 데이터 클래스 인스턴스
-- **예외:** 구성된 동일 예외, `OSError`, `FileNotFoundError`, dataclass 생성자의 `TypeError`만 위 규칙대로 발생한다. 새 도메인 예외를 만들지 않는다.
-- **사전 조건:** 호출자는 문자열 키와 명세된 override 필드를 제공한다.
-- **사후 조건:** 외부 상태는 변하지 않으며, fake의 공개 기록 필드만 명세에 따라 변한다.
+- **입력:** `Job`
+- **출력:** `queued` 또는 실행 중 상태(`acquiring`, `extracting`, `transcribing`, `normalizing`, `correcting`, `reviewing`, `summarizing`)에서 `cancelling`으로 바뀐 새 Job
+- **예외:** 입력이 Job이 아니거나 `cancelling`, 완료·실패·정리·보관 상태이면 `JobStateError`
+- **부수 효과:** 없음. 이 함수는 `transition_job(job, "cancelling")`만 호출해야 한다.
 
 ## 5. 내부 동작 순서
 
-1. 기존 `tests/fakes.py`의 선언 전용 `NotImplementedError` 골격을 위 계약의 결정론적 구현으로 교체한다.
-2. `tests/fixture_factories.py`를 새로 만들고 B01 타입을 생성하는 순수 factory만 구현한다.
-3. 각 함수와 클래스에 계약·예외·부수 효과를 설명하는 docstring을 추가한다.
-4. 구현 후 명세의 검증 명령을 실행한다.
-5. 제품 코드, 실제 테스트, fixture 데이터, 설정 파일은 수정하지 않는다.
+1. `JobStateError`를 B01 예외 계층에 추가한다.
+2. `backend/jobs.py`에서 source를 URL 또는 로컬 파일로 판별하고 위 계약대로 정규화한다.
+3. UUID와 외부 기본 작업 경로를 사용해 queued `Job`을 생성한다. 작업 경로를 실제로 만들지 않는다.
+4. 전이 표를 모듈 상수로 선언하고 `transition_job`에서만 상태 검사를 수행한다.
+5. `dataclasses.replace`로 새 Job을 반환한다.
+6. `request_cancellation`은 취소 가능 상태를 확인한 뒤 `transition_job`에 위임한다.
+7. 명세의 직접 호출·구문 검증을 실행하고 수정 파일·결과·위험 요소를 보고한다.
 
 ## 6. 허용·금지 의존성
 
-- **허용:** Python 표준 라이브러리, `backend.contracts`의 `JobOptions`, `Job`, `RawSegment`, `Transcript`
-- **금지:** 외부 패키지, `pytest`, 실제 STT/Qwen/FFmpeg/다운로드 도구, SQLite, 파일/네트워크/subprocess I/O, 시간·무작위·UUID·환경 변수 API
+- **허용:** Python 표준 라이브러리 `dataclasses`, `pathlib`, `urllib.parse`, `uuid`; `backend.contracts`
+- **금지:** 외부 패키지, `tests` import, DB/SQLite, 파일 생성·삭제, 디렉터리 생성, 네트워크, HTTP 요청, STT/LLM, FFmpeg, subprocess, 환경 변수, 로그·전역 가변 상태
 
 ## 7. 수정 범위
 
-- **수정 허용:** `tests/fakes.py`, `tests/fixture_factories.py`
-- **수정 금지:** 그 외 모든 파일. 특히 `backend/`, `tests/unit/`, `tests/integration/`, `tests/fixtures/`, `docs/`, 설정·스크립트·UI 파일을 수정하지 않는다.
+- **수정 허용:** `backend/jobs.py`, `backend/contracts.py`
+- **수정 금지:** 그 외 모든 파일. 특히 `tests/`, `docs/`, `Statement_of_Functions.md`, 스크립트, 설정, UI 파일을 수정하지 않는다.
 
 ## 8. 테스트 도구·Mock·Fixture·테스트 데이터
 
-- 이 작업의 산출물이 후속 테스트의 Fake와 fixture 생성기다.
-- 실제 테스트 함수, pytest fixture decorator, JSON/오디오 fixture, Mock/Stub 프레임워크는 구현하지 않는다.
-- 검증은 아래의 짧은 표준 라이브러리 실행 명령으로 구현 대상을 직접 호출해 수행한다.
+- 이번 작업에서는 새 pytest 파일·fixture·fake를 만들지 않는다.
+- T01의 `tests.fixture_factories.make_job`은 읽기 전용 검증에서만 사용할 수 있다.
+- 새 파일을 만들지 않는 표준 라이브러리 직접 호출 명령으로 함수 입력·출력·예외·불변성을 검증한다.
 
 ## 9. 실행할 검증 명령
 
-로컬 Python 실행기가 있을 때, 저장소 루트에서 다음 명령을 실행한다.
+저장소 루트에서 아래 명령을 실행한다.
 
 ```powershell
-python -B -c "from backend.contracts import JobOptions; from tests.fakes import FakeFileSystem, FakeQwenRuntime, FakeSttEngine; from tests.fixture_factories import make_job, make_raw_segment, make_transcript; stt=FakeSttEngine({'a.wav': ['ok']}); assert stt.transcribe('a.wav') == ['ok'] and stt.transcribed_paths == ['a.wav']; qwen=FakeQwenRuntime({'p': '{}'}); assert qwen.complete('p') == '{}' and qwen.prompts == ['p']; fs=FakeFileSystem({'tmp.wav'}); fs.remove('tmp.wav'); assert fs.removed_paths == ['tmp.wav'] and not fs.existing_paths; assert make_job().options == JobOptions() and make_raw_segment().segment_id == 'segment-001' and make_transcript().final_text == 'fixture text'; print('T01 checks OK')"
+python -B -c "from pathlib import Path; from unittest import TestCase; from backend.contracts import InputSourceError, JobOptions, JobStateError; from backend.jobs import create_job, request_cancellation, transition_job; case=TestCase(); options=JobOptions(); job=create_job('AGENTS.md', options); assert job.status == 'queued' and job.work_dir.name == job.job_id and job.work_dir.parent == Path(r'D:\AI-Legion\Sodam-data\tmp\jobs') and job.options is options; active=transition_job(job, 'acquiring'); assert active.status == 'acquiring' and job.status == 'queued'; cancelling=request_cancellation(active); assert cancelling.status == 'cancelling'; case.assertRaises(JobStateError, request_cancellation, cancelling); case.assertRaises(JobStateError, transition_job, job, 'completed'); case.assertRaises(InputSourceError, create_job, 'ftp://example.com/a', options); case.assertRaises(InputSourceError, create_job, 'not-found.file', options); assert create_job(' https://example.com/watch ', options).source == 'https://example.com/watch'; print('B02 checks OK')"
 ```
 
-그 다음 다음 명령으로 두 대상 파일의 문법을 확인한다.
+그 다음 구문 검사를 실행한다.
 
 ```powershell
-python -B -c "from pathlib import Path; [compile(Path(p).read_text(encoding='utf-8'), p, 'exec') for p in ('tests/fakes.py', 'tests/fixture_factories.py')]; print('syntax OK')"
+python -B -c "from pathlib import Path; [compile(Path(p).read_text(encoding='utf-8'), p, 'exec') for p in ('backend/contracts.py', 'backend/jobs.py')]; print('syntax OK')"
 ```
 
-`python`이 없으면 설치·다운로드·대체 런타임을 사용하지 않고, 실행 불가 사유만 보고한다.
+`python` 명령이 인식되지 않으면 사용자 Python 3.12 전체 경로를 사용해 같은 명령을 실행할 수 있다. 설치·다운로드·대체 런타임은 사용하지 않는다.
 
 ## 10. 자동·수동 통과 기준
 
-- **자동:** 위 직접 호출 검증과 구문 검사가 모두 성공한다.
-- **수동:** `git diff --check`가 공백 오류 없이 통과하고, diff가 두 허용 테스트 도구 파일에만 한정됨을 확인한다.
-- **실패:** 외부 의존성 호출, 실제 파일 삭제, 잘못된 fake 기록, 공유 입력 컨테이너 변경, 범위 밖 파일 수정 하나라도 있으면 실패다.
+- **자동:** 두 검증 명령이 각각 `B02 checks OK`, `syntax OK`를 출력한다.
+- **수동:** `git diff --check`가 공백 오류 없이 통과하며, 변경 파일이 허용된 두 backend 파일에만 한정된다.
+- **실패:** 실제 디렉터리/파일/DB를 만들거나 삭제함, 작업 데이터 경로가 Git 작업 트리에 있음, 허용되지 않은 전이, 입력 Job 변경, 범위 밖 파일 수정 중 하나라도 발생하면 실패다.
 
 ## 11. 구현하지 않을 범위
 
-- 제품 기능 또는 `backend/` 수정
-- 실제 pytest 테스트 코드·fixture 데이터 구현
-- 실제 디스크·네트워크·모델 호출
-- 성능 측정, 모델 응답 스키마 검증, 상태 전이
+- SQLite/JSON 저장 및 실제 DB 기록
+- 작업 디렉터리 생성·정리, 미디어·소스·STT·LLM 처리
+- UI, API, 비동기/병렬 실행, 로그
+- 새 실제 pytest 테스트 코드, fixture, fake 구현
 - 커밋·푸시
 
 ## 12. 완료 후 보고 항목
 
-1. 수정·생성한 파일 목록
-2. 각 fake의 응답·예외·호출 기록 동작 결과
-3. 각 factory의 기본값·override 결과
-4. 실행한 검증 명령과 결과, 또는 실행 불가 사유
-5. `git diff --check` 및 변경 범위 확인 결과
-6. 남은 위험 요소와 후속 작업(B02 또는 함수별 실제 테스트 코드)의 필요성
+1. 수정 파일 목록
+2. source 정규화·작업 경로 계산·UUID 생성 결과
+3. 허용·차단 상태 전이와 취소 요청 결과
+4. 실행한 검증 명령과 결과
+5. `git diff --check`와 변경 범위 확인 결과
+6. 남은 위험 요소: DB 저장(B03), 실제 작업 폴더 생성/정리(B03), 함수별 pytest 테스트의 별도 승인 필요성

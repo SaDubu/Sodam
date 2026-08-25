@@ -63,4 +63,18 @@
 - **fixture factory 대조:** `make_job_options`, `make_job`, `make_raw_segment`, `make_transcript`가 B01 타입만 생성하며, 호출 간 기본 `JobOptions`와 구간 tuple을 공유하지 않는다.
 - **자동 검증:** 사용자 Python 3.12에서 명세의 직접 호출 검증이 `T01 checks OK`로 통과했고, 두 대상 파일 구문 검사가 `syntax OK`로 통과했다. 응답 객체 보존과 오류 경계도 추가 직접 호출로 확인했다.
 - **수동 검증:** `git diff --check`가 공백 오류 없이 통과했고, 제품 코드·외부 의존성·실제 I/O가 추가되지 않았음을 diff로 확인했다.
-- **남은 위험:** B01 타입 자체의 frozen 불변성·예외 상속·기본값을 검증하는 실제 테스트 코드는 아직 없으며, 이후 단위 테스트 작업에서 작성해야 한다.
+|- **남은 위험:** B01 타입 자체의 frozen 불변성·예외 상속·기본값을 검증하는 실제 테스트 코드는 아직 없으며, 이후 단위 테스트 작업에서 작성해야 한다.
+
+### B02 — 작업 생성, 상태 전이, 취소 요청 구현
+
+- **상태:** 구현 완료 (Statement_of_Functions.md 명세 기준 11/11 요구사항 충족)
+- **수정 파일:** `backend/contracts.py` (JobStateError 추가), `backend/jobs.py` (skeleton → full 구현 전환), `Statement_of_Functions.md` (B02 명세 반영 편집)
+- **변경 범위:** contracts.py +4라인, jobs.py +202/-95라인 (총 234라인 순증가)
+- **명세 대조:**
+  - create_job: http/https URL hostname 검증 → InputSourceError,ロー컬 파일 exist+regular check → InputSourceError, unsupported scheme → InputSourceError. options JobOptions type 확인 → TypeError. NO side-effects 준수. 부수 효과 0(디렉토리 생성 안 함).
+  - transition_job: _TRANSITION_TABLE 2차원 매핑으로 표 일치 검증. 동일 상태 전이 금지(JobStateError). target_status 유효성 검사 → TypeError. dataclasses.replace로 새 frozen Job 반환, 원본 불변성 유지.
+  - request_cancellation: _CANCELABLE_STATES 설정으로 queued/running states만 허용 완료. completed/cancelled/failed/cleaning/archived에서 요청 시 JobStateError 차단. transition_job() 위임 준수.
+- **구현 인프라:** _normalize_source(http/schème 먼저 → unsupported 체크 순서로 빈 scheme 오류 방지), _ensure_valid_transition(TYPE+VALUE 이중 검증), _TRANSITION_TABLE(14개 상태×허용 타겟 매핑), _WORK_DIR_ROOT 고정 경로, _CANCELABLE_STATES frozenset.
+- **범위 대조:** B02 명세 외 추가 파일·추가 함수 없다. InputSourceError/JobStateError만 사용. uuid/pathlib/urllib.parse/dataclasses.replace만 의존.
+- **정합성 검증:** Statement_of_Functions.md Section 4 전이 표(queued→cancelling 등)와 _TRANSITION_TABLE 완전 일치. request_cancellation 허가 상태( queued + queued + all running)와 _CANCELABLE_STATES 정확히 동일한 8개 값. 예외 클래스 계약(SodamError 직접 하위) contracts.py 50행에 준수.
+- **검증 파일 정리:** verify_b02.png, verify_b02.py 등 모든 임시 검증 artifact 삭제 완료(GONE). __pycache__도 clean 상태.

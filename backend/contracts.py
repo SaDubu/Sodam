@@ -47,6 +47,10 @@ class ModelResponseError(SodamError):
     """Raised when a model response violates the expected schema."""
 
 
+class JobStateError(SodamError):
+    """Raised when a requested Job status transition is not permitted."""
+
+
 # ---- immutable data classes ----
 
 @dataclass(frozen=True)
