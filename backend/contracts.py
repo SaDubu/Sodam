@@ -51,6 +51,12 @@ class JobStateError(SodamError):
     """Raised when a requested Job status transition is not permitted."""
 
 
+# ---- storage exceptions ----
+
+class StorageError(SodamError):
+    """Raised when a job artifact cannot be encoded, written, or read."""
+
+
 # ---- immutable data classes ----
 
 @dataclass(frozen=True)
@@ -211,3 +217,23 @@ class CleanupReport:
 
     retained: tuple[pathlib.Path, ...] = ()
     removed: tuple[pathlib.Path, ...] = ()
+
+
+# ---- cleanup policy ----
+
+@dataclass(frozen=True)
+class CleanupPolicy:
+    """Retention rules applied during job artifact cleanup.
+
+    Attributes:
+        retain_artifact_names: Direct child filenames to keep inside the work directory.
+            Only leaf file names (no path separator, no ``.``, ``..``, or absolute paths).
+        remove_empty_work_dir: If True and no retained artifacts remain after
+            cleanup, the empty work directory itself is removed (reported in ``removed``).
+    """
+
+    retain_artifact_names: tuple[str, ...] = ()
+    remove_empty_work_dir: bool = True
+
+
+# ---- end of declarations ----
