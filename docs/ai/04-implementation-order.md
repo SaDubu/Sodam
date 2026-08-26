@@ -87,3 +87,13 @@
 - **안전성 대조:** 모든 artifact 및 symlink 대상은 해당 `job.work_dir` 내부인지 `Path.is_relative_to()`로 확인한다. 정리는 보존 정책을 적용하고, symlink 자체만 삭제하며 외부 대상은 삭제하지 않는다. `assemble_transcript`는 B11 범위로서 `NotImplementedError`를 유지한다.
 - **자동 검증:** Python 3.12 직접 호출로 JSON 저장·읽기, `metadata.json` 보존, 임시 artifact 삭제, 빈 작업 디렉터리 삭제, 작업 루트 밖 경로의 `UnsafePathError`, 존재하지 않는 artifact의 `StorageError`를 확인하여 `B03 checks OK`를 받았다. `backend/contracts.py`와 `backend/storage.py` 구문 검사도 `syntax OK`로 통과했다. 검증 중 생성한 job 디렉터리는 정리됐다.
 - **남은 위험:** SQLite 메타데이터 저장과 전사문 조립은 B03 범위 밖이며 각각 후속 작업과 B11에서 구현한다. 실제 symlink 동작의 OS별 권한 차이는 후속 통합 테스트에서 추가 확인한다.
+
+### B04 — 지원 URL 검증 및 어댑터 기반 오디오 획득
+
+- **상태:** 구현 완료
+- **수정 파일:** `backend/sources.py`
+- **명세 대조:** `validate_source`는 `http`/`https` YouTube URL의 허용 호스트·경로·video ID를 순수하게 검증하고, 앞뒤 공백·비지원 스킴·유사 호스트·잘못된 포트·malformed URL은 모두 `InputSourceError`로 변환한다. 네트워크 호출은 수행하지 않는다.
+- **획득 계약:** `acquire_source_audio(job, adapter)`는 명시적으로 주입받은 `SourceAudioAdapter`만 호출한다. B03 작업 경로 검증 후에만 작업 폴더를 만들고, 정확한 `source-audio.wav` 경로의 덮어쓰기·symlink·작업 폴더 이탈을 `UnsafePathError`로 차단한다. 어댑터 예외와 작업 폴더 생성 오류는 `InputSourceError`로 변환한다.
+- **자동 검증:** 구문 검사와 URL 정상 2건·차단 6건이 통과했다. `RecordingAdapter` 성공 경로에서 호출 횟수 1회, `AudioArtifact` 반환, artifact 존재 및 작업 폴더 경계를 확인했다. 성공 경로 검증에서 생성한 작업 전용 artifact는 정리했다.
+- **범위 대조:** 구현 변경은 `backend/sources.py`에 한정됐다. 실제 다운로드 도구, FFmpeg, subprocess, 외부 네트워크, 테스트 파일 및 fixture 변경은 추가하지 않았다.
+- **남은 위험:** 실제 다운로드 도구의 구현·선택·권한/약관 처리는 B13 구성 단계에서 결정한다. 로컬 미디어 파일 변환과 코덱 표준화는 B05 범위다.
