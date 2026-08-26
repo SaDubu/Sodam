@@ -57,6 +57,10 @@ class StorageError(SodamError):
     """Raised when a job artifact cannot be encoded, written, or read."""
 
 
+class MediaExtractionError(SodamError):
+    """Raised when media decoding or normalized-audio output fails."""
+
+
 # ---- immutable data classes ----
 
 @dataclass(frozen=True)

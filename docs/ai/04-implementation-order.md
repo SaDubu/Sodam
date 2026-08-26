@@ -97,3 +97,14 @@
 - **자동 검증:** 구문 검사와 URL 정상 2건·차단 6건이 통과했다. `RecordingAdapter` 성공 경로에서 호출 횟수 1회, `AudioArtifact` 반환, artifact 존재 및 작업 폴더 경계를 확인했다. 성공 경로 검증에서 생성한 작업 전용 artifact는 정리했다.
 - **범위 대조:** 구현 변경은 `backend/sources.py`에 한정됐다. 실제 다운로드 도구, FFmpeg, subprocess, 외부 네트워크, 테스트 파일 및 fixture 변경은 추가하지 않았다.
 - **남은 위험:** 실제 다운로드 도구의 구현·선택·권한/약관 처리는 B13 구성 단계에서 결정한다. 로컬 미디어 파일 변환과 코덱 표준화는 B05 범위다.
+
+### B05 — 로컬 미디어의 표준 WAV 오디오 추출
+
+- **상태:** 구현 완료
+- **수정 파일:** `backend/contracts.py` (`MediaExtractionError`), `backend/media.py` (`FfmpegRunner`, `extract_audio`)
+- **명세 대조:** `extract_audio(job, source_path, runner)`는 기존 일반 파일과 지원 확장자만 읽기 전용으로 허용하고, B03 작업 경로를 검증한 뒤 `normalized-audio.wav` 하나만 대상으로 한다. 기존 output·source symlink·output symlink·작업 폴더 이탈은 `UnsafePathError`로 차단하며, source 검증 실패는 `InputSourceError`, 추출·output I/O 실패는 `MediaExtractionError`로 변환한다.
+- **runner 계약:** FFmpeg를 직접 실행하지 않고 주입된 runner에 `-i`, `-vn`, `-ac 1`, `-ar 16000`, `-sample_fmt s16`, output 경로의 argument vector를 정확히 한 번 전달한다. runner 실패는 `MediaExtractionError`로 변환하고 `KeyboardInterrupt`·`SystemExit`은 전파한다.
+- **자동 검증:** `RecordingRunner`로 호출 횟수 1회, argument vector, output 경로, job ID, `duration_seconds=None`, output 존재·0 초과 크기, source 불변을 확인했다. 존재하지 않는 source, 작업 루트 밖 work_dir, 기존 output도 계약 예외로 차단됐다. 구문 검사와 대상 파일의 `git diff --check`도 통과했다.
+- **수동 검증:** `subprocess`, FFmpeg 라이브러리, 네트워크 의존성이 없음을 diff로 확인했다. Windows symlink 생성 권한이 없어 source/output symlink의 실제 생성 테스트는 건너뛰었으며, 정적 코드 대조로 symlink 선행 차단 순서를 확인했다.
+- **정리:** 승인된 B05 검증 폴더 `b05-esym-out`, `b05-pass`와 저장소 내 임시 검증 script·`__pycache__`를 삭제했다.
+- **남은 위험:** 실제 FFmpeg codec 실행 및 duration 검증은 범위 밖이다. Windows 권한이 허용되는 환경에서 symlink 경계의 통합 검증을 추가로 수행할 수 있다.
