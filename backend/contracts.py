@@ -51,7 +51,7 @@ class JobStateError(SodamError):
     """Raised when a requested Job status transition is not permitted."""
 
 
-# ---- storage exceptions ----
+# ---- storage and processing exceptions ----
 
 class StorageError(SodamError):
     """Raised when a job artifact cannot be encoded, written, or read."""
@@ -59,6 +59,10 @@ class StorageError(SodamError):
 
 class MediaExtractionError(SodamError):
     """Raised when media decoding or normalized-audio output fails."""
+
+
+class TranscriptionError(SodamError):
+    """Raised when STT input, engine execution, or segment output is invalid."""
 
 
 # ---- immutable data classes ----

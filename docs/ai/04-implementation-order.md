@@ -108,3 +108,14 @@
 - **수동 검증:** `subprocess`, FFmpeg 라이브러리, 네트워크 의존성이 없음을 diff로 확인했다. Windows symlink 생성 권한이 없어 source/output symlink의 실제 생성 테스트는 건너뛰었으며, 정적 코드 대조로 symlink 선행 차단 순서를 확인했다.
 - **정리:** 승인된 B05 검증 폴더 `b05-esym-out`, `b05-pass`와 저장소 내 임시 검증 script·`__pycache__`를 삭제했다.
 - **남은 위험:** 실제 FFmpeg codec 실행 및 duration 검증은 범위 밖이다. Windows 권한이 허용되는 환경에서 symlink 경계의 통합 검증을 추가로 수행할 수 있다.
+
+### B06 — 주입형 STT 호출 및 시간 구간 표준화
+
+- **상태:** 구현 완료
+- **수정 파일:** `backend/contracts.py` (`TranscriptionError`), `backend/transcription.py` (`SttEngine`, `transcribe_audio` 및 검증 보조 함수)
+- **명세 대조:** `transcribe_audio(audio, engine)`는 기존 일반 audio 파일만 허용하고, 주입된 engine의 `transcribe()`를 resolve한 경로 문자열로 정확히 한 번 호출한다. engine 속성·경로·실행·반환 스키마 오류는 `TranscriptionError`로 변환하고 `KeyboardInterrupt`·`SystemExit`은 전파한다.
+- **표준화 계약:** engine 반환값은 list 또는 tuple만 허용한다. 각 mapping의 비어 있지 않은 text에 대해 유한·비음수·증가하는 start/end 및 optional confidence(0~1 또는 `None`)를 검증한다. blank text는 원문을 바꾸지 않고 제외하며, 남은 순서대로 `segment-0001`부터 `RawSegment`를 생성한다.
+- **자동 검증:** FakeSttEngine으로 호출 횟수 1회, blank filtering, segment ID·원문·confidence 보존, 역순 시간의 `TranscriptionError`, generator 반환 거부, 잘못된 engine의 `TypeError`, `TranscriptionError` 상속을 확인하여 `B06 checks OK`를 받았다. contracts/transcription 구문 검사도 `syntax OK`로 통과했다.
+- **범위 대조:** B01의 기존 JobStatus와 예외 계층이 보존된 상태에서 `TranscriptionError`만 추가됐다. 실제 STT 모델, 네트워크, subprocess, 파일 변경, pytest/fixture/fake 변경은 추가하지 않았다.
+- **정리:** 승인된 B06 저장소 루트 임시 검증 script 네 개를 삭제했다.
+- **남은 위험:** 실제 STT 모델의 형식 차이·성능·언어/화자 품질은 B13 통합 단계와 실제 모델 검증에서 확인해야 한다.
