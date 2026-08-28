@@ -65,6 +65,14 @@ class TranscriptionError(SodamError):
     """Raised when STT input, engine execution, or segment output is invalid."""
 
 
+class ProtectionError(SodamError):
+    """Raised when protection/restore of tokens fails."""
+
+
+class NormalizationError(SodamError):
+    """Raised when restricted rule normalization would violate an invariant."""
+
+
 # ---- immutable data classes ----
 
 @dataclass(frozen=True)

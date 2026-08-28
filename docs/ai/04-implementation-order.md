@@ -119,3 +119,26 @@
 - **범위 대조:** B01의 기존 JobStatus와 예외 계층이 보존된 상태에서 `TranscriptionError`만 추가됐다. 실제 STT 모델, 네트워크, subprocess, 파일 변경, pytest/fixture/fake 변경은 추가하지 않았다.
 - **정리:** 승인된 B06 저장소 루트 임시 검증 script 네 개를 삭제했다.
 - **남은 위험:** 실제 STT 모델의 형식 차이·성능·언어/화자 품질은 B13 통합 단계와 실제 모델 검증에서 확인해야 한다.
+
+### B07 — 보호 토큰의 가역 placeholder 치환과 복원
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `backend/contracts.py` (`ProtectionError`), `backend/protection.py` (`protect_tokens`, `restore_tokens`)
+- **명세 대조:** 원문 segment를 newline으로 조립하고, 기존 placeholder·긴 glossary·URL·날짜·금액·숫자·대문자 약어 순서로 한 번만 스캔한다. 각 발견 위치에 서로 다른 placeholder를 생성하므로 동일 원문값의 반복도 독립적으로 복원한다.
+- **충돌·복원 계약:** 생성 후보는 전체 입력·각 glossary 항목의 부분문자열 및 기존 map key와 충돌하지 않는다. `restore_tokens`는 map 형식, unknown placeholder, 누락·복제 token을 검증한 뒤 placeholder만 복원한다.
+- **자동 검증:** Python 3.12 직접 호출로 기본 보호·복원·누락 placeholder 거부를 확인해 `B07 checks OK`를 받았다. 반복 `JFK`, 기존 `[[SODAM_PROTECTED_0001]]`, `$1,200`, `3000원`, `1,200`, `3000`의 위치별 보호와 완전한 왕복 복원도 `B07 edge checks OK`로 통과했다. contracts/protection 구문 검사는 `syntax OK`, `git diff --check -- backend/contracts.py backend/protection.py`는 공백 오류 없이 통과했다.
+- **범위·불변성 대조:** 표준 라이브러리 `re`와 domain contracts만 사용하며, 파일 I/O·네트워크·모델·subprocess·입력 segment·glossary·ProtectedText의 in-place 변경은 없다.
+- **커밋 전 확인 사항:** 추적되지 않은 `backen/` 및 `backend/__pycache__/`가 작업 트리에 남아 있다. B07 구현 검증에서는 이들을 생성·수정·삭제하지 않았으며, 삭제 또는 보관 여부를 별도로 결정해야 한다.
+- **남은 위험:** 날짜·URL·통화 표기의 추가 변형과 OS별 Unicode 경계는 B08 이후의 단위·통합 테스트에서 넓혀 검증한다.
+
+### B08 — 보호 텍스트의 제한적 규칙 정규화
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `backend/contracts.py` (`NormalizationError`), `backend/text_rules.py` (`normalize_rules` 및 입력 검증 보조 함수)
+- **명세 대조:** Unicode whitespace 축소, 선행·후행 공백 제거, 문장부호 앞 공백 제거, 괄호 안쪽 공백 제거의 네 규칙만 적용한다. 문장부호·한글·라틴 문자·숫자·placeholder 자체는 변경하지 않는다.
+- **보호값·불변식 계약:** 입력과 결과에서 non-whitespace 문자열이 같은지 확인하고, replacements의 key가 정확한 placeholder 형식인지, 입력·결과에 각 key가 정확히 한 번 있는지, unknown placeholder가 없는지를 `NormalizationError`로 검증한다. 입력 객체와 map은 변경하지 않는다.
+- **자동 검증:** Python 3.12 직접 호출로 네 규칙, placeholder 보존, non-whitespace 불변식, 문장 경계, 잘못된 입력의 `TypeError`, 누락 map key와 malformed map key의 `NormalizationError`를 확인하여 `B08 checks OK`를 받았다. contracts/text_rules 구문 검사도 `syntax OK`로 통과했다.
+- **형식 검증:** trailing whitespace 두 건을 제거한 뒤 `git diff --check -- backend/contracts.py backend/text_rules.py`가 오류 없이 통과했다. LF→CRLF 안내 경고는 오류가 아니다.
+- **범위 대조:** 표준 라이브러리 `re`와 domain contracts만 사용하며, 파일 I/O·네트워크·모델·Kiwi·subprocess·테스트 파일 생성은 없다.
+- **커밋 전 확인 사항:** 추적되지 않은 `backen/` 및 `backend/__pycache__/`는 B08 범위 밖 항목으로 유지 중이다. 삭제 또는 보관을 별도로 결정한 뒤 제품 변경만 선별해 커밋해야 한다.
+- **남은 위험:** URL·수치·복합 기호는 B07의 placeholder 보존에 의존한다. 더 넓은 Unicode·문장부호 표본은 T02 단위 테스트와 통합 테스트 단계에서 확장 검증한다.
