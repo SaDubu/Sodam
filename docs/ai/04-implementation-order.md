@@ -142,3 +142,14 @@
 - **범위 대조:** 표준 라이브러리 `re`와 domain contracts만 사용하며, 파일 I/O·네트워크·모델·Kiwi·subprocess·테스트 파일 생성은 없다.
 - **커밋 전 확인 사항:** 추적되지 않은 `backen/` 및 `backend/__pycache__/`는 B08 범위 밖 항목으로 유지 중이다. 삭제 또는 보관을 별도로 결정한 뒤 제품 변경만 선별해 커밋해야 한다.
 - **남은 위험:** URL·수치·복합 기호는 B07의 placeholder 보존에 의존한다. 더 넓은 Unicode·문장부호 표본은 T02 단위 테스트와 통합 테스트 단계에서 확장 검증한다.
+
+### B09 — 주입형 Qwen JSON 교정 응답 검증
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `backend/correction.py` (`QwenRuntime`, `correct_chunk`, 입력·응답 검증 보조 함수)
+- **명세 대조:** module은 주입받은 `QwenRuntime.complete(prompt)`만 정확히 한 번 호출한다. 12,000자 청크와 네 개 이하의 context를 경계 검사하고, prompt에 JSON object 전용·placeholder 보존 제약·순서 보존 context·target text를 결정론적으로 포함한다.
+- **JSON·보호값 계약:** 응답은 `corrected_text`, `changes`, `requires_review` 세 key만 갖는 `str` JSON object여야 한다. markdown·extra key·잘못된 scalar·invalid changes·bytes 응답·placeholder 순서/개수/값의 변경은 `ModelResponseError`로 거부한다. no-op 응답은 `requires_review=True`를 가질 수 없다.
+- **입력 경계 계약:** `RuleNormalizedText.sentence_boundaries`는 범위 내의 엄격히 증가하는 `tuple[int, ...]`이며, 중복·내림차순 boundary는 `ValueError`다. runtime의 `complete` 미구현은 `TypeError`다.
+- **자동 검증:** RecordingRuntime 직접 호출로 호출 횟수 1회, prompt 원문/context 포함, 유효 `CorrectionResult` 변환, invalid JSON, placeholder 손실, invalid runtime, bytes JSON 거부, duplicate 및 descending sentence boundary 거부를 확인해 `B09 checks OK`를 받았다. `backend/correction.py` 구문 검사도 `syntax OK`로 통과했다.
+- **형식·범위 검증:** `git diff --check -- backend/correction.py`가 통과했다. 표준 라이브러리 `json`, `re`, `typing.Protocol`과 domain contracts만 사용하며, 실제 Qwen/Ollama/네트워크·파일 I/O·subprocess·테스트 파일 생성은 없다.
+- **남은 위험:** JSON schema와 placeholder 보존만 검증한다. changes가 실제 편집과 정확히 대응하는지, 의미·사실 변경이 안전한지는 B10의 변경 검증 책임이다. 실제 runtime의 모델 품질·비결정성·성능은 B13 통합 단계에서 평가한다.
