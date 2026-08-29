@@ -164,3 +164,13 @@
 - **자동 검증:** formatting-only 자동 승인, 한글·숫자 변경 검토 큐, placeholder 손실/unknown token/known key 누락·복제/순서 변경 거부, 타입·raw 불일치 거부를 직접 호출로 확인해 `B10 checks OK`를 받았다. multi-token·multiple opcode·mixed diff·no-op·malformed map도 추가 검증을 통과했다.
 - **형식·범위 검증:** `backend/validation.py` 구문 검사 `syntax OK` 및 `git diff --check -- backend/validation.py`가 통과했다. 표준 라이브러리 `re`, `difflib.SequenceMatcher`와 domain contracts만 사용하며, 모델·네트워크·파일 I/O·subprocess·테스트 파일 생성은 없다.
 - **남은 위험:** 의미·사실의 언어학적 판단을 하지 않으므로 SAFE_PUNCTUATION 밖의 애매한 표기 변경은 의도적으로 검토 대상으로 남는다. 실제 검토·승인·UI 저장은 후속 단계 책임이다.
+
+### B11 — 시간순 RawSegment 전사문 조립
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `backend/contracts.py` (`TranscriptAssemblyError`), `backend/storage.py` (`assemble_transcript` 및 검증 보조 함수)
+- **명세 대조:** list 안의 RawSegment를 입력 순서 그대로 검증해 새 tuple의 `Transcript`로 반환하고, `final_text`는 각 raw_text를 newline으로 정확히 조립한다. 빈 list는 빈 tuple·빈 문자열 Transcript로 반환한다.
+- **시간·ID 계약:** segment_id는 비어 있지 않고 앞뒤 공백이 없으며 고유해야 한다. start/end는 bool이 아닌 유한 수, start는 0 이상, end는 start보다 커야 한다. start 또는 end의 역순, duplicate/malformed ID, blank raw_text, 범위를 벗어난 confidence는 `TranscriptAssemblyError`다. sorting·시간 보정·ID 생성은 하지 않는다.
+- **자동 검증:** 정상 조립, 빈 list, newline 결과, 입력 불변성, duplicate ID, 역순 시간, item/list 타입 위반과 `TranscriptAssemblyError`의 `SodamError` 상속을 직접 확인하여 `B11 checks OK`를 받았다. 앞뒤 공백 segment_id 거부도 추가 검증했다.
+- **형식·범위 검증:** contracts/storage 구문 검사 `syntax OK` 및 `git diff --check -- backend/contracts.py backend/storage.py`가 통과했다. B03의 저장·읽기·cleanup 함수와 경로 상수는 변경하지 않았으며 파일·DB·네트워크·모델·새 검증 파일을 사용하지 않는다.
+- **남은 위험:** STT의 실제 overlap/gap 처리 정책과 교정·검토 결과를 segment에 반영하는 방식은 후속 파이프라인·통합 테스트에서 검증한다. B11은 입력 순서를 보존하고 역순만 거부한다.

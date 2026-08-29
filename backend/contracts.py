@@ -73,6 +73,10 @@ class NormalizationError(SodamError):
     """Raised when restricted rule normalization would violate an invariant."""
 
 
+class TranscriptAssemblyError(SodamError):
+    """Raised when transcript segments cannot form a valid chronological transcript."""
+
+
 # ---- immutable data classes ----
 
 @dataclass(frozen=True)

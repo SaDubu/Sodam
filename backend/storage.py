@@ -1,6 +1,7 @@
 """Persistence, transcript assembly, and safe-cleanup contracts."""
 
 import json
+import math
 import pathlib
 import shutil
 from typing import Any
@@ -12,6 +13,7 @@ from .contracts import (
     RawSegment,
     StorageError,
     Transcript,
+    TranscriptAssemblyError,
     UnsafePathError,
 )
 
@@ -259,10 +261,75 @@ def cleanup_artifacts(
     )
 
 
+def _validate_segments(segments) -> None:
+    """Validate the segment list contract (types only)."""
+    if not isinstance(segments, list):
+        raise TypeError("segments must be a list")
+    for segment in segments:
+        if not isinstance(segment, RawSegment):
+            raise TypeError("every segment must be a RawSegment")
+
+
+def _validate_finite_number(value, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TranscriptAssemblyError("%s must be a finite int or float" % name)
+    number = float(value)
+    if not math.isfinite(number):
+        raise TranscriptAssemblyError("%s must be finite" % name)
+    return number
+
+
 def assemble_transcript(segments: list[RawSegment]) -> Transcript:
     """Assemble valid time-ordered segments into a transcript and time index.
 
-    A later implementation must reject missing/duplicate IDs and reverse timing;
-    it will not repair those input errors implicitly.
+    Rejects missing/duplicate IDs and reverse timing; it does not repair
+    those input errors implicitly.
     """
-    raise NotImplementedError("B11: assemble_transcript has not been implemented")
+    _validate_segments(segments)
+    if not segments:
+        return Transcript(segments=(), final_text="")
+
+    seen_ids: set[str] = set()
+    previous_start: float | None = None
+    previous_end: float | None = None
+
+    for segment in segments:
+        segment_id = segment.segment_id
+        if (
+            not isinstance(segment_id, str)
+            or not segment_id
+            or segment_id != segment_id.strip()
+        ):
+            raise TranscriptAssemblyError(
+                "segment_id must be a non-blank str without surrounding whitespace"
+            )
+        if segment_id in seen_ids:
+            raise TranscriptAssemblyError("duplicate segment_id: %r" % (segment_id,))
+        seen_ids.add(segment_id)
+
+        start = _validate_finite_number(segment.start_seconds, "start_seconds")
+        end = _validate_finite_number(segment.end_seconds, "end_seconds")
+        if start < 0:
+            raise TranscriptAssemblyError("start_seconds must be >= 0")
+        if end <= start:
+            raise TranscriptAssemblyError("end_seconds must be greater than start_seconds")
+
+        if previous_start is not None and (start < previous_start or end < previous_end):
+            raise TranscriptAssemblyError("segments must not move backwards in time")
+        previous_start = start
+        previous_end = end
+
+        raw_text = segment.raw_text
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            raise TranscriptAssemblyError("raw_text must be a non-blank str")
+
+        confidence = segment.confidence
+        if confidence is not None:
+            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+                raise TranscriptAssemblyError("confidence must be None or a finite number")
+            confidence_value = float(confidence)
+            if not math.isfinite(confidence_value) or not (0 <= confidence_value <= 1):
+                raise TranscriptAssemblyError("confidence must be between 0 and 1")
+
+    final_text = "\n".join(segment.raw_text for segment in segments)
+    return Transcript(segments=tuple(segments), final_text=final_text)
