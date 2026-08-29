@@ -153,3 +153,14 @@
 - **자동 검증:** RecordingRuntime 직접 호출로 호출 횟수 1회, prompt 원문/context 포함, 유효 `CorrectionResult` 변환, invalid JSON, placeholder 손실, invalid runtime, bytes JSON 거부, duplicate 및 descending sentence boundary 거부를 확인해 `B09 checks OK`를 받았다. `backend/correction.py` 구문 검사도 `syntax OK`로 통과했다.
 - **형식·범위 검증:** `git diff --check -- backend/correction.py`가 통과했다. 표준 라이브러리 `json`, `re`, `typing.Protocol`과 domain contracts만 사용하며, 실제 Qwen/Ollama/네트워크·파일 I/O·subprocess·테스트 파일 생성은 없다.
 - **남은 위험:** JSON schema와 placeholder 보존만 검증한다. changes가 실제 편집과 정확히 대응하는지, 의미·사실 변경이 안전한지는 B10의 변경 검증 책임이다. 실제 runtime의 모델 품질·비결정성·성능은 B13 통합 단계에서 평가한다.
+
+### B10 — 보호값 보존 변경 검증과 검토 큐 분류
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `backend/validation.py` (`validate_revision` 및 입력·placeholder 검증 보조 함수)
+- **명세 대조:** `SequenceMatcher(autojunk=False)` opcode를 순서대로 처리하며, whitespace와 `SAFE_PUNCTUATION`만의 변경은 자동 승인한다. 한글·영문·숫자·기타 기호 변경은 보수적으로 `review_required` item으로 분류한다.
+- **보호값 계약:** raw는 `protections.text`와 정확히 같아야 한다. replacements map의 key/value 형식, raw·corrected의 unknown placeholder, known key의 누락·복제, placeholder 순서 변경을 `ProtectionError`로 거부한다.
+- **승인 경계:** 위험 item이 없으면 corrected를 `approved_text`로 반환한다. 하나라도 있으면 raw를 그대로 유지하고, 위험 opcode만 raw 순서의 `review_items` tuple로 반환한다. 위험 변경을 자동 적용하지 않는다.
+- **자동 검증:** formatting-only 자동 승인, 한글·숫자 변경 검토 큐, placeholder 손실/unknown token/known key 누락·복제/순서 변경 거부, 타입·raw 불일치 거부를 직접 호출로 확인해 `B10 checks OK`를 받았다. multi-token·multiple opcode·mixed diff·no-op·malformed map도 추가 검증을 통과했다.
+- **형식·범위 검증:** `backend/validation.py` 구문 검사 `syntax OK` 및 `git diff --check -- backend/validation.py`가 통과했다. 표준 라이브러리 `re`, `difflib.SequenceMatcher`와 domain contracts만 사용하며, 모델·네트워크·파일 I/O·subprocess·테스트 파일 생성은 없다.
+- **남은 위험:** 의미·사실의 언어학적 판단을 하지 않으므로 SAFE_PUNCTUATION 밖의 애매한 표기 변경은 의도적으로 검토 대상으로 남는다. 실제 검토·승인·UI 저장은 후속 단계 책임이다.
