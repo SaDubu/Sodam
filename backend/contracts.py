@@ -77,6 +77,10 @@ class TranscriptAssemblyError(SodamError):
     """Raised when transcript segments cannot form a valid chronological transcript."""
 
 
+class EmptyTranscriptError(SodamError):
+    """Raised when a summary is requested for an empty transcript."""
+
+
 # ---- immutable data classes ----
 
 @dataclass(frozen=True)

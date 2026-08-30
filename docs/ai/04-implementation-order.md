@@ -174,3 +174,14 @@
 - **자동 검증:** 정상 조립, 빈 list, newline 결과, 입력 불변성, duplicate ID, 역순 시간, item/list 타입 위반과 `TranscriptAssemblyError`의 `SodamError` 상속을 직접 확인하여 `B11 checks OK`를 받았다. 앞뒤 공백 segment_id 거부도 추가 검증했다.
 - **형식·범위 검증:** contracts/storage 구문 검사 `syntax OK` 및 `git diff --check -- backend/contracts.py backend/storage.py`가 통과했다. B03의 저장·읽기·cleanup 함수와 경로 상수는 변경하지 않았으며 파일·DB·네트워크·모델·새 검증 파일을 사용하지 않는다.
 - **남은 위험:** STT의 실제 overlap/gap 처리 정책과 교정·검토 결과를 segment에 반영하는 방식은 후속 파이프라인·통합 테스트에서 검증한다. B11은 입력 순서를 보존하고 역순만 거부한다.
+
+### B12 — 근거 ID 기반 계층형 전사문 요약
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `backend/contracts.py` (`EmptyTranscriptError`), `backend/summarization.py` (`summarize_transcript` 및 입력·JSON 응답 검증 보조 함수)
+- **명세 대조:** Transcript를 입력 순서대로 8개 이하 batch로 나누고, batch별 주입형 `QwenRuntime.complete`를 한 번씩 호출한다. 여러 batch이면 검증된 중간 요약과 evidence ID만 포함한 final synthesis를 한 번 더 호출하며, 한 batch이면 해당 응답을 final로 사용한다.
+- **요약·근거 계약:** 모든 response는 text/evidence_segment_ids 두 key만 가진 str JSON object여야 한다. text는 trim된 1~1,000자·최대 두 문장이고, evidence ID는 non-empty·고유·실제 해당 batch 또는 전체 transcript 범위 안이어야 한다. bytes·markdown/invalid JSON·unknown evidence·세 문장 이상은 `ModelResponseError`다.
+- **입력 경계:** Transcript type, tuple RawSegment, 고유·trimmed segment ID, nonblank raw_text, final_text의 정확한 newline 조립을 검증한다. 빈 segment tuple 또는 whitespace-only final_text는 `EmptyTranscriptError`다.
+- **자동 검증:** 9개 segment와 순차 응답 RecordingRuntime으로 두 batch와 final synthesis, 총 3회 호출, final Summary text/evidence tuple을 확인하여 `B12 checks OK`를 받았다. 빈 Transcript와 unknown evidence 응답도 계약 예외로 거부했다. contracts/summarization 구문 검사는 `syntax OK`로 통과했다.
+- **형식·범위 검증:** `git diff --check -- backend/contracts.py backend/summarization.py`가 통과했다. 실제 Qwen/Ollama·네트워크·파일/DB I/O·subprocess·새 검증 파일은 사용하지 않았고, 전사문과 segment를 변경하지 않는다.
+- **남은 위험:** JSON 스키마·근거 ID만 기계적으로 검증하므로 실제 모델의 요약 품질·사실성·표현 적절성은 B13 통합과 T03 평가 단계에서 추가 평가해야 한다.
