@@ -1,0 +1,23 @@
+{
+  "name": "desktop",
+  "version": "1.0.0",
+  "description": "Framework-independent desktop state contracts for a future Tauri shell.",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "build": "node scripts/build.mjs",
+    "tauri:check": "tauri build --debug --no-bundle"
+  },
+  "keywords": [],
+  "private": true,
+  "type": "commonjs",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2"
+  }
+}

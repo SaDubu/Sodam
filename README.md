@@ -1,61 +1,108 @@
-# Sodam
+# Sodam — 로컬 영상 전사·요약·소개글 생성 파이프라인
 
-Sodam은 로컬 미디어 또는 승인된 URL을 전사하고, 보호 토큰·제한적 정규화·검토 큐를 거쳐 근거 구간이 연결된 요약을 만드는 계약 기반 파이프라인입니다. 제품 코드는 외부 collaborator를 주입받도록 설계되어 있으며, 기본 실행은 모델·다운로드·미디어 도구를 자동으로 호출하지 않습니다.
+Sodam은 영상 파일을 외부 클라우드로 전송하지 않고, 사용자의 PC에서 **FFmpeg → faster-whisper → Ollama/Qwen**을 연결해 전사와 콘텐츠 결과물을 만드는 로컬 우선 애플리케이션입니다. 기존의 사실 중심 `summary`를 유지하면서, 같은 전사문에서 시청자의 호기심을 유도하는 `introduction`을 선택적으로 생성할 수 있습니다.
 
-## 현재 범위
+이 저장소는 단순 데모가 아니라 계약(contract) 기반 도메인 모델부터 보호 토큰, 근거 연결 요약, 검토 큐, 재시도·복원력 보고, CLI와 Tauri UI까지 단계적으로 쌓아 올린 포트폴리오용 구현입니다.
 
-- B02~B13은 작업 lifecycle, 안전한 artifact 경계, 입력/미디어/STT/교정/검토/전사문/요약 계약과 주입형 pipeline을 구현했습니다.
-- `apps/desktop/src/state.ts`는 초기 UI 상태 계약만 제공합니다. Tauri 화면·IPC·실행 UI는 아직 연결하지 않았습니다.
-- `tests/unit/`과 `tests/integration/`은 fake 기반 계약과 lifecycle을 검증합니다.
-- `tools/evaluate_transcript.py`는 고정 fixture로 교정 정확도·보호 토큰 보존·위험 자동승인·처리시간 지표를 계산합니다.
-- `tools/inspect_job.py`는 명세화된 작업 JSON artifact를 읽기 전용으로 점검합니다.
-- 실제 URL adapter, FFmpeg runner, STT engine, Qwen runtime, DB persistence는 별도 구성·승인이 필요합니다.
+## 무엇을 해결하는가
 
-설계와 이력은 [architecture](docs/ai/01-architecture.md), [implementation order](docs/ai/04-implementation-order.md), 현재 단일 작업 명세는 [Statement_of_Functions.md](Statement_of_Functions.md)를 확인하세요.
+긴 영상에서 사람이 반복하는 작업은 오디오 추출, 전사, 핵심 내용 선별, 사실 보존, 소개 문구 작성입니다. Sodam은 이 흐름을 하나의 작업 ID로 묶고 각 단계의 입력·출력·실패를 기록합니다. LLM이 원문을 임의로 바꾸지 않도록 고유 placeholder로 보호하고, 수정 제안은 별도로 검증한 뒤 안전한 변경만 자동 반영합니다. 확신할 수 없는 변경은 자동 승인하지 않고 review queue로 보냅니다.
 
-## 개발 환경과 검증
+## 제공 기능
 
-Windows PowerShell과 Python 3.12를 기준으로 합니다. pytest는 Python 3.12 환경에 설치되어 있어야 합니다.
+| 모드 | 결과 | 용도 |
+| --- | --- | --- |
+| `summary` | 근거 구간이 연결된 사실 중심 요약 | 기존 요약 기능, 기본 모드 |
+| `introduction` | 제목형 한 줄, 핵심 매력 포인트, 호기심 gap, CTA를 포함한 소개글 | 영상 업로드·홍보 문구 |
+| `both` | 같은 전사문에서 summary와 introduction 모두 생성 | 비교·검수·콘텐츠 제작 |
 
-```powershell
-C:\Users\sow20\AppData\Local\Programs\Python\Python312\python.exe -B -m pytest -q
+공통 기능으로 단계별 progress 이벤트(JSONL/human), ETA·재시도 수·검토 필요 수를 포함한 resilience report, 취소 가능한 job lifecycle, 결과 재열기(`inspect_job.py`), review 승인 도구를 제공합니다.
 
-C:\Users\sow20\AppData\Local\Programs\Python\Python312\python.exe -B tools/evaluate_transcript.py tests/fixtures/evaluation_cases.json
+## 설계 포인트
 
-C:\Users\sow20\AppData\Local\Programs\Python\Python312\python.exe -B tools/inspect_job.py tests/fixtures/inspection_job
+- **Local-first**: Qwen은 Ollama loopback(`127.0.0.1`)으로만 호출하고 STT 모델·미디어·결과는 Git 저장소 밖에 둡니다.
+- **명시적 조립**: FFmpeg, STT, Qwen을 Protocol/adapter로 주입해 실제 런타임과 fake 테스트를 분리했습니다.
+- **원문 보존**: URL·금액·날짜·숫자·glossary를 occurrence 단위 placeholder로 보호합니다. 수정 제안은 placeholder 순서·개수·근거 ID를 검증합니다.
+- **안전한 실패**: 경로 탈출·심볼릭 링크·덮어쓰기·잘못된 JSON·모델 오류를 계약 예외로 분류합니다. CLI/Tauri stderr에는 비밀값과 raw prompt 대신 안전한 오류 category만 노출합니다.
+- **결정론적 재조립**: locked text와 editable text를 분리하고, 검토 대상/identity 결과를 구분해 같은 입력에서 재현 가능한 결과를 만듭니다.
+- **UI와 CLI의 동일 계약**: `tools/run_local.py`의 진행·결과 schema를 Tauri reducer와 공유해 화면을 닫았다 다시 열어도 persisted job 상태를 해석할 수 있습니다.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-repository-clean.ps1 -RepositoryRoot .
+상세 설계는 [architecture](docs/ai/01-architecture.md), 단계별 결정과 실행 결과는 [implementation order](docs/ai/04-implementation-order.md), 제품화 계획은 [productization roadmap](docs/ai/05-productization-roadmap.md), 실제 모델 경계는 [runtime profile](docs/ai/06-runtime-profile.md)에서 확인할 수 있습니다.
+
+## 설치 전 조건
+
+Windows 10/11 x64, Python 3.12, 16 GB RAM 이상과 모델·작업 데이터를 위한 여유 디스크를 권장합니다. 실제 검증 환경은 다음과 같았지만 설치 경로는 사용자 환경에 맞춰 지정합니다.
+
+```text
+Python:  D:\AI-Legion\Sodam-runtime\Scripts\python.exe
+FFmpeg:  D:\AI-Legion\Sodam-data\tools\ffmpeg-9.0.1\bin\ffmpeg.exe
+STT:     D:\AI-Legion\Sodam-models\faster-whisper\turbo-0a363e9
+Ollama:  http://127.0.0.1:11434, qwen3.6:35b-a3b-agent-64k
 ```
 
-평가와 점검 CLI는 fixture만 읽고 JSON report를 stdout으로 출력합니다. repository policy 검사는 tracked/staged path만 읽기 전용으로 검사합니다.
-
-## 작업 artifact와 사용자 데이터
-
-작업 전용 artifact root는 `D:\AI-Legion\Sodam-data\tmp\jobs`이며 Git repository 밖에 있습니다. 각 Job은 그 아래 자신의 work directory만 소유하고, cleanup 계약은 해당 디렉터리 안에서만 정리합니다.
-
-사용자 미디어, 전사 결과, model files, job DB와 임시 audio는 repository에 저장하거나 commit하지 마세요. `.gitignore`과 `scripts/check-repository-clean.ps1`은 이런 유입을 방지하기 위한 보조 장치이며, 사용자 data의 백업 정책을 대신하지는 않습니다.
-
-## 모델 설치 정책
-
-`models/manifest.json`은 schema version `1`과 빈 `profiles`만 가진 declaration manifest입니다. 승인·검증된 profile name, HTTPS URL, lowercase SHA-256 checksum이 추가되기 전에는 실제 모델 설치를 실행하지 마세요.
-
-`scripts/setup-models.ps1`의 `Install-SodamModels`는 다음을 강제합니다.
-
-- repository 내부 model home, path traversal, 기존 target overwrite를 거부합니다.
-- 주입 또는 기본 downloader가 만든 partial file의 SHA-256이 일치할 때만 final file로 이동합니다.
-- hash mismatch 등 실패 시 partial file 정리를 시도합니다.
-
-기본 downloader를 실제로 실행하려면 별도의 model profile·외부 호출 승인이 필요합니다. 이 repository에는 확정된 model name, URL, checksum 또는 runtime 등록값이 포함되어 있지 않습니다.
-
-## Git 정책
-
-Git에는 source, 선언 manifest, 문서와 재현 가능한 합성 fixture만 둡니다. 모델·미디어·local database·secret environment file·repository 내부의 잘못된 `Sodam-data/`는 ignore 대상입니다. `models/manifest.json`은 추적 대상이며 ignore하지 않습니다.
-
-변경 전에는 다음을 권장합니다.
+`setup.py`는 현재 설치 계획과 진단을 보여주는 부트스트랩입니다. 모델을 묵시적으로 다운로드하지 않으므로 먼저 계획만 확인하세요. 모델 가중치와 개인 미디어는 절대 이 저장소에 커밋하지 않습니다.
 
 ```powershell
+python setup.py --plan-only
+python tools/doctor.py --json
+```
+
+`doctor.py`는 `SODAM_FFMPEG` 절대 경로를 PATH보다 우선하고 Qwen `qwen3.6:35b-a3b-agent-64k`를 검사합니다. 환경변수를 설정하지 않으면 PATH에 있는 `ffmpeg`를 사용하므로, 외부 설치 경로를 사용하는 경우 환경변수를 설정하세요.
+
+## 로컬 파일 실행
+
+```powershell
+$py = 'D:\AI-Legion\Sodam-runtime\Scripts\python.exe'
+$env:Path = 'D:\AI-Legion\Sodam-data\tools\ffmpeg-9.0.1\bin;' + $env:Path
+$model = 'D:\AI-Legion\Sodam-models\faster-whisper\turbo-0a363e9'
+& $py -B tools/run_local.py 'C:\path\to\video.mp4' --mode run --output-mode summary
+& $py -B tools/run_local.py 'C:\path\to\video.mp4' --mode run --model-path $model --qwen-model qwen3.6:35b-a3b-agent-64k --output-mode introduction --progress-format human
+& $py -B tools/run_local.py 'C:\path\to\video.mp4' --mode run --model-path $model --qwen-model qwen3.6:35b-a3b-agent-64k --output-mode both --progress-format jsonl
+```
+
+stdout에는 최종 JSON만, stderr에는 단계별 진행 로그가 출력됩니다. `jsonl` 이벤트에는 상태·단계·완료율·경과 시간이 포함되며 ETA를 계산할 수 없을 때는 null로 남습니다. 결과는 `D:\AI-Legion\Sodam-data\jobs\<job-id>`에 저장되고 `tools/inspect_job.py JOB_DIR`로 다시 읽을 수 있습니다.
+
+승인된 URL은 사용 권한이 있는 경우에만 `--allow-url --mode run`을 함께 사용하세요. cookie, 로그인 정보, playlist, proxy, 원격 API fallback은 사용하지 않습니다.
+
+## 검토와 재생성
+
+```powershell
+python tools/inspect_job.py D:\AI-Legion\Sodam-data\jobs\<job-id>
+python tools/resolve_review.py <job-id> 0 --decision accept_suggested --result-root D:\AI-Legion\Sodam-data\jobs
+python tools/refresh_summary.py <job-id> --result-root D:\AI-Legion\Sodam-data\jobs
+```
+
+원본 전사·검토 queue는 audit으로 보존되며, 사용자가 명시적으로 refresh할 때만 `resolved_summary.json`을 추가 생성합니다. 기존 summary는 덮어쓰지 않습니다.
+
+## 데스크톱 UI
+
+`apps/desktop`은 Tauri shell과 순수 TypeScript 상태 계층으로 구성됩니다. 파일 선택, `summary`/`introduction`/`both` 모드, 단계별 진행률·ETA·로그, 취소, 결과·전사문·review 탭, 재시도/identity 결과를 표시하도록 설계했습니다. 프런트엔드는 파일·모델·네트워크에 직접 접근하지 않고 backend의 구조화 이벤트만 소비합니다.
+
+TypeScript 검사, Node 계약 테스트, 정적 frontend build는 통과했습니다. 현재 개발 환경의 Windows Code Integrity 정책과 Tauri 의존성 상태 때문에 실제 Rust/Tauri bundle/window smoke는 별도 운영 환경 검증이 필요하므로, unsigned installer를 배포 완료로 주장하지 않습니다. CLI는 UI 없이도 전체 pipeline을 실행할 수 있습니다.
+
+## 개인정보와 저장 경계
+
+모델, 사용자 미디어, 전사문, 결과와 임시 audio는 Git repository 밖에 둡니다. 작업 임시물은 `D:\AI-Legion\Sodam-data\tmp\jobs` 아래 해당 job 경계 안에서만 생성·정리됩니다. prompt 전문·비밀값·사용자 URL token을 로그나 commit에 넣지 마세요.
+
+## 검증
+
+```powershell
+C:\Users\sow20\AppData\Local\Programs\Python\Python312\python.exe -B -m pytest -q -p no:cacheprovider
+npm --prefix apps/desktop test
+npm --prefix apps/desktop run check
+npm --prefix apps/desktop run build
 git diff --check
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-repository-clean.ps1 -RepositoryRoot .
 ```
 
-이 검사는 완전한 secret DLP나 실제 서비스의 권한·약관 검토를 대체하지 않습니다.
+검증 기준선은 Python 전체 테스트 `252 passed, 1 skipped`, 데스크톱 Node 계약 테스트 `11 passed`, TypeScript `check` 및 frontend `build` 통과입니다. `cargo check`는 현재 호스트의 Tauri 의존성/Code Integrity 환경에서 `E0463 (can't find crate for tauri)`가 발생해 코드 결함과 분리된 환경 blocker로 기록했습니다. 실제 모델을 사용하는 60초 `both` 수직 슬라이스는 Ollama `qwen3.6:35b-a3b-agent-64k`, faster-whisper `turbo`, FFmpeg 9.0.1 조합으로 `archived`까지 확인했습니다.
+
+## 포트폴리오 관점의 구현 이력
+
+1. **B01~B12**: 불변 도메인 계약, 작업 상태, 안전한 저장·오디오 추출·전사·보호·정규화·요약을 단계별 명세로 구현했습니다.
+2. **T02~T05**: 각 계약의 fake/fixture, 단위·통합 테스트, 읽기 전용 점검 도구를 추가했습니다.
+3. **CR-01~CR-06**: Qwen 교정 응답 검증, locked/editable 재조립, bounded retry, identity/review 분류, CLI resilience report, Tauri stderr/UI bridge를 연결했습니다.
+4. **Product v2**: `summary`를 유지하면서 `introduction`과 `both` output mode, 실제 로컬 adapter 조립, 설치 진단·결과 재열기 흐름을 추가했습니다.
+
+## 알려진 범위와 다음 과제
+
+이 저장소는 개인용 로컬 실행 후보입니다. 자동 모델 다운로드·클라우드 fallback·무단 URL 수집은 포함하지 않으며, 사용 권한이 있는 입력만 처리합니다. 다음 릴리스 전 과제는 깨끗한 Windows PC에서의 Tauri installer smoke, 실제 5개 영상에 대한 사람 품질평가, 모델/드라이버별 성능 기준, 필요 시 서명된 배포물 검증입니다.

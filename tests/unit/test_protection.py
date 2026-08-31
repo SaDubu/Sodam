@@ -2,8 +2,20 @@
 
 import pytest
 
-from backend.contracts import ProtectedText, ProtectionError, RawSegment
-from backend.protection import protect_tokens, restore_tokens
+from backend.contracts import (
+    EditablePart,
+    EditableTextPlan,
+    LockedPart,
+    ProtectedText,
+    ProtectionError,
+    RawSegment,
+)
+from backend.protection import (
+    protect_tokens,
+    reassemble_locked_parts,
+    restore_tokens,
+    split_locked_parts,
+)
 
 
 _TOKEN_ONE = "[[SODAM_PROTECTED_0001]]"
@@ -87,3 +99,122 @@ def test_restore_does_not_mutate_replacement_mapping() -> None:
     restore_tokens(protected, protected.text)
 
     assert protected.replacements == original_replacements
+
+
+def test_split_and_reassemble_preserve_order_and_locked_values() -> None:
+    original = "앞 JFK 중 OpenAI 뒤 2026-08-27"
+    protected = protect_tokens([_segment(original)], ("OpenAI",))
+
+    plan = split_locked_parts(protected, "s1")
+
+    assert isinstance(plan, EditableTextPlan)
+    assert "".join(part.text for part in plan.parts) == original
+    assert [part.part_id for part in plan.parts] == [
+        "s1:editable:0000",
+        "s1:locked:0000",
+        "s1:editable:0001",
+        "s1:locked:0001",
+        "s1:editable:0002",
+        "s1:locked:0002",
+        "s1:editable:0003",
+    ]
+    assert [part.text for part in plan.parts if isinstance(part, LockedPart)] == [
+        "JFK",
+        "OpenAI",
+        "2026-08-27",
+    ]
+    assert reassemble_locked_parts(plan) == original
+
+
+def test_split_without_placeholder_and_empty_text_have_editable_part() -> None:
+    plain = ProtectedText("plain text", {})
+    empty = ProtectedText("", {})
+
+    plain_plan = split_locked_parts(plain, "plain")
+    empty_plan = split_locked_parts(empty, "empty")
+
+    assert plain_plan.parts == (EditablePart("plain:editable:0000", "plain text"),)
+    assert empty_plan.parts == (EditablePart("empty:editable:0000", ""),)
+    assert reassemble_locked_parts(plain_plan) == "plain text"
+    assert reassemble_locked_parts(empty_plan) == ""
+
+
+def test_repeated_locked_values_keep_independent_part_ids() -> None:
+    protected = protect_tokens([_segment("JFK JFK")], ())
+
+    plan = split_locked_parts(protected, "repeat")
+    locked = [part for part in plan.parts if isinstance(part, LockedPart)]
+
+    assert [part.text for part in locked] == ["JFK", "JFK"]
+    assert [part.part_id for part in locked] == [
+        "repeat:locked:0000",
+        "repeat:locked:0001",
+    ]
+    assert reassemble_locked_parts(plan) == "JFK JFK"
+
+
+def test_editable_replacement_does_not_change_locked_parts() -> None:
+    protected = protect_tokens([_segment("before JFK after")], ())
+    plan = split_locked_parts(protected, "s1")
+
+    result = reassemble_locked_parts(
+        plan,
+        {"s1:editable:0000": "BEFORE ", "s1:editable:0001": " AFTER"},
+    )
+
+    assert result == "BEFORE JFK AFTER"
+    assert "JFK" in result
+
+
+@pytest.mark.parametrize(
+    ("protected", "segment_id", "exception"),
+    [
+        (object(), "s1", TypeError),
+        (ProtectedText("text", {}), 1, TypeError),
+        (ProtectedText("text", {}), "", ValueError),
+        (ProtectedText("text", {}), " s1", ValueError),
+        (ProtectedText("[[SODAM_PROTECTED_0001]]", {}), "s1", ProtectionError),
+        (ProtectedText("[[SODAM_PROTECTED_0001]]", {"invalid": "x"}), "s1", ProtectionError),
+    ],
+)
+def test_split_rejects_invalid_inputs(
+    protected: object,
+    segment_id: object,
+    exception: type[Exception],
+) -> None:
+    with pytest.raises(exception):
+        split_locked_parts(protected, segment_id)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("replacements", "exception"),
+    [
+        ([], TypeError),
+        ({"s1:locked:0000": "changed"}, ProtectionError),
+        ({"unknown": "changed"}, ProtectionError),
+        ({"s1:editable:0000": 1}, TypeError),
+    ],
+)
+def test_reassemble_rejects_invalid_replacements(
+    replacements: object,
+    exception: type[Exception],
+) -> None:
+    plan = split_locked_parts(
+        protect_tokens([_segment("before JFK after")], ()),
+        "s1",
+    )
+
+    with pytest.raises(exception):
+        reassemble_locked_parts(plan, replacements)  # type: ignore[arg-type]
+
+
+def test_split_and_reassemble_do_not_mutate_protected_text() -> None:
+    protected = protect_tokens([_segment("JFK OpenAI")], ("OpenAI",))
+    original_text = protected.text
+    original_map = dict(protected.replacements)
+
+    plan = split_locked_parts(protected, "s1")
+    reassemble_locked_parts(plan)
+
+    assert protected.text == original_text
+    assert protected.replacements == original_map

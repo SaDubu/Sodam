@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sodam",
+  "version": "0.1.0",
+  "identifier": "com.sodam.desktop",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "Sodam", "width": 900, "height": 640, "resizable": false }],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.ico"],
+    "targets": ["nsis", "msi", "dmg", "appimage", "deb"],
+    "createUpdaterArtifacts": false
+  }
+}

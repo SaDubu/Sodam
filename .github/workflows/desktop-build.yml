@@ -1,0 +1,51 @@
+name: desktop-build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: nsis
+          - os: macos-latest
+            target: dmg
+          - os: ubuntu-latest
+            target: appimage
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Check frontend
+        run: npm run check
+      - name: Test frontend contracts
+        run: npm test
+      - name: Build frontend
+        run: npm run build
+      - name: Build unsigned desktop bundle
+        run: npx tauri build --bundles ${{ matrix.target }}
+      - name: Upload unsigned artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sodam-${{ matrix.target }}-${{ github.sha }}
+          path: apps/desktop/src-tauri/target/release/bundle/**
+          if-no-files-found: error

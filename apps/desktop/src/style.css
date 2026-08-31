@@ -1,0 +1,14 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #10131a; color: #eef2ff; }
+body { margin: 0; min-width: 320px; }
+.panel { max-width: 50rem; margin: 5vh auto; padding: 2rem; border: 1px solid #38445f; border-radius: 1rem; background: #19202d; }
+.eyebrow { color: #9fb2d9; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+h1 { margin: .25rem 0 1rem; } h2 { margin-top: 1.5rem; font-size: 1.05rem; }
+.lede { color: #c7d2eb; }
+button, select { margin: .35rem .4rem .35rem 0; padding: .55rem .8rem; border: 1px solid #52658e; border-radius: .45rem; background: #25314a; color: inherit; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button:focus-visible, select:focus-visible { outline: 3px solid #9bd7ff; outline-offset: 2px; }
+progress { display: block; width: 100%; height: 1.1rem; margin: .75rem 0; accent-color: #7dd3a7; }
+dt { margin-top: .7rem; color: #b8c4dd; } dd { margin: .15rem 0; } code { color: #b9f6d0; }
+[role="tablist"] { display: flex; gap: .25rem; border-bottom: 1px solid #38445f; }
+[role="tab"] { border-radius: .45rem .45rem 0 0; } [role="tab"][aria-selected="true"] { background: #40557d; }
+[role="tabpanel"] { min-height: 5rem; padding: 1rem .5rem; color: #d5def1; }

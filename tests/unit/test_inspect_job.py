@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -88,3 +89,69 @@ def test_inspection_is_read_only_for_every_fixture_artifact() -> None:
     inspect_job(str(_JOB_DIR))
 
     assert {path.name: hashlib.sha256(path.read_bytes()).digest() for path in paths} == before
+
+
+def test_schema_v1_format_is_accepted_but_unknown_version_is_rejected(tmp_path: Path) -> None:
+    copied = tmp_path / "persisted"
+    shutil.copytree(_JOB_DIR, copied)
+    (copied / "format.json").write_text('{"schema_version":1}', encoding="utf-8")
+
+    assert inspect_job(str(copied))["job_id"] == "fixture-job-001"
+
+    (copied / "format.json").write_text('{"schema_version":2}', encoding="utf-8")
+    with pytest.raises(ValueError):
+        inspect_job(str(copied))
+
+
+def test_inspector_reports_valid_optional_review_decision(tmp_path: Path) -> None:
+    copied = tmp_path / "persisted"
+    shutil.copytree(_JOB_DIR, copied)
+    (copied / "review_resolution.json").write_text(
+        '{"schema_version":1,"decisions":[{"review_index":0,"decision":"accept_suggested","resolved_text":"the"}]}',
+        encoding="utf-8",
+    )
+    resolved_text = "First! fixture line.\nSecond fixture line."
+    (copied / "resolved_summary.json").write_text(
+        '{"schema_version":1,"transcript_sha256":"%s","summary":{"text":"Resolved summary.","evidence_segment_ids":["segment-0001"]}}'
+        % hashlib.sha256(resolved_text.encode("utf-8")).hexdigest(),
+        encoding="utf-8",
+    )
+
+    report = inspect_job(str(copied))
+
+    assert report["pending_review_item_count"] == 0
+    assert report["review_decisions"] == [
+        {"review_index": 0, "decision": "accept_suggested", "resolved_text": "the"}
+    ]
+
+
+def test_inspector_reports_valid_review_locations(tmp_path: Path) -> None:
+    copied = tmp_path / "persisted"
+    shutil.copytree(_JOB_DIR, copied)
+    (copied / "review.json").write_text(
+        '{"review_items":[{"kind":"review_required","raw":"First","corrected":"First!","reason":"fixture"}]}',
+        encoding="utf-8",
+    )
+    (copied / "review_locations.json").write_text(
+        '{"schema_version":1,"locations":[{"review_index":0,"segment_id":"segment-0001","start_offset":0,"end_offset":5}]}',
+        encoding="utf-8",
+    )
+    (copied / "review_resolution.json").write_text(
+        '{"schema_version":1,"decisions":[{"review_index":0,"decision":"accept_suggested","resolved_text":"First!"}]}',
+        encoding="utf-8",
+    )
+    resolved_text = "First! fixture line.\nSecond fixture line."
+    (copied / "resolved_summary.json").write_text(
+        '{"schema_version":1,"transcript_sha256":"%s","summary":{"text":"Resolved summary.","evidence_segment_ids":["segment-0001"]}}'
+        % hashlib.sha256(resolved_text.encode("utf-8")).hexdigest(),
+        encoding="utf-8",
+    )
+
+    report = inspect_job(str(copied))
+    assert report["review_locations"] == [
+        {"review_index": 0, "segment_id": "segment-0001", "start_offset": 0, "end_offset": 5}
+    ]
+    assert report["resolved_final_text"].startswith("First! fixture line.")
+    assert report["applied_review_indices"] == [0]
+    assert report["summary_is_stale"] is False
+    assert report["resolved_summary_text"] == "Resolved summary."

@@ -11,6 +11,12 @@ htmlcov/
 .env.*
 *.local
 
+# Desktop development dependencies and compiler cache
+apps/desktop/node_modules/
+apps/desktop/*.tsbuildinfo
+apps/desktop/dist/
+apps/desktop/src-tauri/target/
+
 # Model downloads and partial files
 *.gguf
 *.safetensors

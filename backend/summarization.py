@@ -120,6 +120,7 @@ def _build_batch_prompt(batch: tuple[RawSegment, ...]) -> str:
             "Return exactly one JSON object and nothing else.",
             "Do not add facts outside the supplied segments.",
             "Use only supplied segment IDs as evidence.",
+            "The text field must contain exactly one or two complete sentences.",
             'Schema: {"text":"summary", "evidence_segment_ids":["segment-id"]}',
             "Segments:",
             json.dumps(records, ensure_ascii=False),
@@ -179,6 +180,7 @@ def _build_reviewed_batch_prompt(batch: tuple[ReviewedSegment, ...]) -> str:
             "Return exactly one JSON object and nothing else.",
             "Do not add facts outside the supplied segments.",
             "Use only supplied segment IDs as evidence.",
+            "The text field must contain exactly one or two complete sentences.",
             'Schema: {"text":"summary", "evidence_segment_ids":["segment-id"]}',
             "Reviewed segments:",
             json.dumps(records, ensure_ascii=False),
@@ -198,8 +200,12 @@ def _build_final_prompt(batch_summaries: tuple[Summary, ...]) -> str:
     return "\n".join(
         (
             "Return exactly one JSON object and nothing else.",
+            "Write a concise, factual Korean summary of the video's central subject and important content.",
+            "Use the supplied intermediate summaries as a whole rather than selecting only one batch.",
+            "Do not make one early fact, such as an award or ranking, the main theme unless every summary is about it.",
             "Do not add facts outside the supplied intermediate summaries.",
             "Use only supplied segment IDs as evidence.",
+            "The text field must contain exactly one or two complete sentences.",
             'Schema: {"text":"summary", "evidence_segment_ids":["segment-id"]}',
             "Validated intermediate summaries:",
             json.dumps(records, ensure_ascii=False),

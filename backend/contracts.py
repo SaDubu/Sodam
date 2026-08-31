@@ -28,6 +28,32 @@ JobStatus = Literal[
     "archived",
 ]
 
+OutputMode = Literal["summary", "introduction", "both"]
+
+ProgressScope = Literal["setup", "job"]
+
+ProgressStage = Literal[
+    "environment_check",
+    "dependency_install",
+    "model_download",
+    "source_validation",
+    "source_acquisition",
+    "audio_extraction",
+    "transcription",
+    "text_protection",
+    "rule_normalization",
+    "correction",
+    "review_validation",
+    "transcript_assembly",
+    "summarization",
+    "introduction",
+    "persistence",
+    "cleanup",
+    "completed",
+    "failed",
+    "cancelled",
+]
+
 
 # ---- exception hierarchy ----
 
@@ -79,6 +105,22 @@ class TranscriptAssemblyError(SodamError):
 
 class EmptyTranscriptError(SodamError):
     """Raised when a summary is requested for an empty transcript."""
+
+
+class IntroductionError(SodamError):
+    """Raised when a generated video introduction violates its contract."""
+
+
+class ProgressStateError(SodamError):
+    """Raised when progress events violate the operation lifecycle."""
+
+
+class InstallationError(SodamError):
+    """Raised when a system probe, installation, or verification step fails."""
+
+
+class BuildError(SodamError):
+    """Raised when an operating-system-specific desktop build cannot complete."""
 
 
 # ---- immutable data classes ----
@@ -274,6 +316,183 @@ class CleanupPolicy:
 
     retain_artifact_names: tuple[str, ...] = ()
     remove_empty_work_dir: bool = True
+
+
+# ---- approved v2 contract skeletons ----
+
+@dataclass(frozen=True)
+class Highlight:
+    """One source-grounded candidate for use in a video introduction."""
+
+    text: str
+    category: str
+    evidence_segment_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class IntroductionOptions:
+    """Style limits for a video introduction without changing summary behavior."""
+
+    minimum_body_sentences: int = 2
+    maximum_body_sentences: int = 3
+    maximum_questions: int = 1
+    exclude_promotional_segments: bool = True
+
+
+@dataclass(frozen=True)
+class VideoIntroduction:
+    """Fact-grounded promotional copy stored separately from Summary."""
+
+    title_hook: str
+    body: str
+    highlights: tuple[str, ...]
+    evidence_segment_ids: tuple[str, ...]
+    question_used: bool
+    call_to_action: str
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """Validated setup or job progress payload shared by CLI and desktop UI."""
+
+    operation_id: str
+    scope: ProgressScope
+    stage: ProgressStage
+    stage_label: str
+    stage_progress: float | None
+    overall_progress: float | None
+    completed_units: float | None
+    total_units: float | None
+    elapsed_seconds: float
+    eta_seconds: float | None
+    message: str
+    can_cancel: bool
+    sequence: int
+    timestamp: str
+
+
+@dataclass(frozen=True)
+class RuntimeProfile:
+    """User-selected local runtime paths, model tags, and bounded context settings."""
+
+    profile_name: str
+    qwen_model: str
+    stt_model_path: pathlib.Path
+    ffmpeg_path: pathlib.Path
+    ollama_endpoint: str = "http://127.0.0.1:11434/api/chat"
+    qwen_context_tokens: int = 32768
+
+
+@dataclass(frozen=True)
+class SystemProfile:
+    """Read-only host capability report used to plan an installation."""
+
+    operating_system: str
+    architecture: str
+    cpu_name: str | None
+    ram_bytes: int | None
+    gpu_name: str | None
+    vram_bytes: int | None
+    free_disk_bytes: int | None
+    tool_versions: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class InstallationAction:
+    """One explicit, user-visible step in an installation plan."""
+
+    action_id: str
+    label: str
+    download_bytes: int | None = None
+    required_disk_bytes: int | None = None
+
+
+@dataclass(frozen=True)
+class InstallationPlan:
+    """Immutable installation proposal created before external changes occur."""
+
+    requested_profile: str
+    actions: tuple[InstallationAction, ...]
+    total_download_bytes: int | None
+    required_disk_bytes: int
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InstallationReceipt:
+    """Verified record of installed tools and exact local model identifiers."""
+
+    profile_name: str
+    installed_tools: tuple[tuple[str, str], ...]
+    model_identifiers: tuple[tuple[str, str], ...]
+    completed_at: str
+
+
+@dataclass(frozen=True)
+class BuildArtifact:
+    """One operating-system-specific desktop build output and its digest."""
+
+    target_os: str
+    path: pathlib.Path
+    sha256: str
+
+
+# ---- v3 constrained-correction skeleton contracts ----
+
+@dataclass(frozen=True)
+class EditablePart:
+    """A model-editable text span identified independently of its content."""
+
+    part_id: str
+    text: str
+
+
+@dataclass(frozen=True)
+class LockedPart:
+    """An immutable source-grounded span reinserted by the application."""
+
+    part_id: str
+    text: str
+
+
+CorrectionPart = EditablePart | LockedPart
+
+
+@dataclass(frozen=True)
+class EditableTextPlan:
+    """Ordered editable/locked spans for one transcript segment or group."""
+
+    segment_id: str
+    parts: tuple[CorrectionPart, ...]
+    original_text: str
+
+
+@dataclass(frozen=True)
+class EditProposal:
+    """One proposed replacement for an editable part."""
+
+    editable_id: str
+    replacement: str
+
+
+@dataclass(frozen=True)
+class CorrectionAttempt:
+    """Metadata for one constrained-correction model attempt."""
+
+    attempt_number: int
+    status: Literal["accepted", "retrying", "identity_applied"]
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class CorrectionOutcome:
+    """Validated correction output, including retry and review metadata."""
+
+    text: str
+    edits: tuple[EditProposal, ...]
+    attempts: tuple[CorrectionAttempt, ...]
+    identity_applied: bool
+    review_reason: str | None = None
 
 
 # ---- end of declarations ----

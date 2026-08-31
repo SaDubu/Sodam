@@ -55,6 +55,17 @@ def test_nine_segments_use_two_batches_and_one_final_synthesis() -> None:
     assert "segment-0001" in runtime.prompts[0]
     assert "segment-0009" in runtime.prompts[1]
     assert "Validated intermediate summaries:" in runtime.prompts[2]
+    assert all(
+        "exactly one or two complete sentences" in prompt
+        for prompt in runtime.prompts
+    )
+    final_prompt = runtime.prompts[2]
+    assert "factual Korean summary" in final_prompt
+    assert "supplied intermediate summaries as a whole" in final_prompt
+    assert "introduction" not in final_prompt.lower()
+    assert "CTA" not in final_prompt
+    assert "curiosity" not in final_prompt.lower()
+    assert "one early fact" in final_prompt
 
 
 def test_one_batch_returns_its_response_without_final_synthesis() -> None:
