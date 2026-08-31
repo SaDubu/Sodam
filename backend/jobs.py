@@ -72,8 +72,14 @@ def _normalize_source(source: str, options: JobOptions) -> str:
             f"options must be JobOptions, got {type(options).__name__}"
         )
 
+    is_windows_drive_absolute = (
+        len(stripped) >= 3
+        and stripped[0].isalpha()
+        and stripped[1] == ":"
+        and stripped[2] in ("\\", "/")
+    )
     parsed = urlparse(stripped)
-    scheme = parsed.scheme.lower()
+    scheme = "" if is_windows_drive_absolute else parsed.scheme.lower()
 
     # http/https URL case → verify hostname not empty
     if scheme in ("http", "https"):
