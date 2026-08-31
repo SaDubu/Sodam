@@ -7,6 +7,8 @@ from .contracts import (
     EmptyTranscriptError,
     ModelResponseError,
     RawSegment,
+    ReviewedSegment,
+    ReviewedTranscript,
     Summary,
     Transcript,
 )
@@ -125,6 +127,65 @@ def _build_batch_prompt(batch: tuple[RawSegment, ...]) -> str:
     )
 
 
+def _validate_reviewed_inputs(
+    transcript: ReviewedTranscript,
+    runtime: QwenRuntime,
+) -> None:
+    """Validate reviewed text while retaining source segment IDs as evidence."""
+    if not isinstance(transcript, ReviewedTranscript):
+        raise TypeError("transcript must be a ReviewedTranscript")
+    if not isinstance(transcript.segments, tuple):
+        raise ValueError("transcript.segments must be a tuple")
+    if not isinstance(transcript.final_text, str):
+        raise ValueError("transcript.final_text must be a str")
+    if not transcript.segments or not transcript.final_text.strip():
+        raise EmptyTranscriptError("transcript must not be empty")
+    if not callable(getattr(runtime, "complete", None)):
+        raise TypeError("runtime.complete must be callable")
+
+    segment_ids: set[str] = set()
+    expected_text_parts: list[str] = []
+    for segment in transcript.segments:
+        if not isinstance(segment, ReviewedSegment):
+            raise ValueError("transcript.segments must contain ReviewedSegment values")
+        source = segment.source
+        if not isinstance(source, RawSegment):
+            raise ValueError("reviewed segment source must be a RawSegment")
+        if (
+            not isinstance(source.segment_id, str)
+            or not source.segment_id
+            or source.segment_id != source.segment_id.strip()
+            or source.segment_id in segment_ids
+        ):
+            raise ValueError("source segment IDs must be unique, non-blank strings")
+        if not isinstance(source.raw_text, str) or not source.raw_text.strip():
+            raise ValueError("source segment raw_text must be a non-blank str")
+        if not isinstance(segment.final_text, str) or not segment.final_text.strip():
+            raise ValueError("reviewed segment final_text must be a non-blank str")
+        segment_ids.add(source.segment_id)
+        expected_text_parts.append(segment.final_text)
+    if transcript.final_text != "\n".join(expected_text_parts):
+        raise ValueError("transcript.final_text must match its reviewed segment text")
+
+
+def _build_reviewed_batch_prompt(batch: tuple[ReviewedSegment, ...]) -> str:
+    """Build a deterministic JSON-only prompt from approved segment text."""
+    records = [
+        {"segment_id": segment.source.segment_id, "final_text": segment.final_text}
+        for segment in batch
+    ]
+    return "\n".join(
+        (
+            "Return exactly one JSON object and nothing else.",
+            "Do not add facts outside the supplied segments.",
+            "Use only supplied segment IDs as evidence.",
+            'Schema: {"text":"summary", "evidence_segment_ids":["segment-id"]}',
+            "Reviewed segments:",
+            json.dumps(records, ensure_ascii=False),
+        )
+    )
+
+
 def _build_final_prompt(batch_summaries: tuple[Summary, ...]) -> str:
     """Build the final synthesis prompt from validated intermediate summaries."""
     records = [
@@ -159,6 +220,30 @@ def summarize_transcript(
         batch_ids = {segment.segment_id for segment in batch}
         batch_summaries.append(
             _call_runtime(runtime, _build_batch_prompt(batch), batch_ids)
+        )
+
+    if len(batch_summaries) == 1:
+        return batch_summaries[0]
+    return _call_runtime(
+        runtime,
+        _build_final_prompt(tuple(batch_summaries)),
+        all_ids,
+    )
+
+
+def summarize_reviewed_transcript(
+    transcript: ReviewedTranscript,
+    runtime: QwenRuntime,
+) -> Summary:
+    """Return an evidence-linked summary of approved, restored segment text."""
+    _validate_reviewed_inputs(transcript, runtime)
+    all_ids = {segment.source.segment_id for segment in transcript.segments}
+    batch_summaries: list[Summary] = []
+    for index in range(0, len(transcript.segments), MAX_SEGMENTS_PER_BATCH):
+        batch = transcript.segments[index : index + MAX_SEGMENTS_PER_BATCH]
+        batch_ids = {segment.source.segment_id for segment in batch}
+        batch_summaries.append(
+            _call_runtime(runtime, _build_reviewed_batch_prompt(batch), batch_ids)
         )
 
     if len(batch_summaries) == 1:

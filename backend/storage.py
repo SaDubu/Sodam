@@ -11,6 +11,8 @@ from .contracts import (
     CleanupReport,
     Job,
     RawSegment,
+    ReviewedSegment,
+    ReviewedTranscript,
     StorageError,
     Transcript,
     TranscriptAssemblyError,
@@ -333,3 +335,46 @@ def assemble_transcript(segments: list[RawSegment]) -> Transcript:
 
     final_text = "\n".join(segment.raw_text for segment in segments)
     return Transcript(segments=tuple(segments), final_text=final_text)
+
+
+def assemble_reviewed_transcript(
+    transcript: Transcript,
+    approved_segment_texts: list[str],
+) -> ReviewedTranscript:
+    """Pair approved segment text with a validated source transcript.
+
+    The source ``RawSegment`` objects are retained unchanged so their IDs and
+    timestamps remain the evidence basis for later reviewed-text summarization.
+    """
+    if not isinstance(transcript, Transcript):
+        raise TypeError("transcript must be a Transcript")
+    if not isinstance(approved_segment_texts, list):
+        raise TypeError("approved_segment_texts must be a list")
+    if not isinstance(transcript.segments, tuple):
+        raise TranscriptAssemblyError("transcript.segments must be a tuple")
+    if not isinstance(transcript.final_text, str):
+        raise TranscriptAssemblyError("transcript.final_text must be a str")
+
+    validated_source = assemble_transcript(list(transcript.segments))
+    if transcript.final_text != validated_source.final_text:
+        raise TranscriptAssemblyError(
+            "transcript.final_text must match its source segment text"
+        )
+    if len(approved_segment_texts) != len(transcript.segments):
+        raise TranscriptAssemblyError(
+            "approved_segment_texts must match transcript segment count"
+        )
+    for text in approved_segment_texts:
+        if not isinstance(text, str) or not text.strip():
+            raise TranscriptAssemblyError(
+                "approved segment text must be a non-blank str"
+            )
+
+    reviewed_segments = tuple(
+        ReviewedSegment(source=segment, final_text=text)
+        for segment, text in zip(transcript.segments, approved_segment_texts)
+    )
+    return ReviewedTranscript(
+        segments=reviewed_segments,
+        final_text="\n".join(approved_segment_texts),
+    )

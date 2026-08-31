@@ -218,6 +218,22 @@ class Transcript:
 
 
 @dataclass(frozen=True)
+class ReviewedSegment:
+    """One source segment paired with its approved, restored final text."""
+
+    source: RawSegment
+    final_text: str
+
+
+@dataclass(frozen=True)
+class ReviewedTranscript:
+    """An ordered reviewed transcript that retains its raw segment evidence."""
+
+    segments: tuple[ReviewedSegment, ...]
+    final_text: str
+
+
+@dataclass(frozen=True)
 class Summary:
     """AI-generated summary with verifiable evidence.
 

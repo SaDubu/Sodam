@@ -29,10 +29,13 @@ export interface ReviewItemViewModel {
   reason: string;
 }
 
-/**
- * Declare the future initial-state factory.
- * It will validate only UI state once B13 exposes a local backend contract.
- */
+/** Return a fresh UI state before any job has been created. */
 export function createInitialJobViewModel(): JobViewModel {
-  throw new Error("U01: createInitialJobViewModel has not been implemented");
+  return {
+    jobId: "",
+    sourceLabel: "",
+    status: "queued",
+    progressPercent: null,
+    summary: null,
+  };
 }

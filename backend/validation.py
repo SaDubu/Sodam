@@ -12,16 +12,13 @@ _PLACEHOLDER_KEY_RE = re.compile(r"^\[\[SODAM_PROTECTED_\d+\]\]$")
 
 
 def _validate_inputs(raw: str, corrected: str, protections: ProtectedText) -> None:
-    """Validate types, raw/protections equality, map shape, placeholders."""
+    """Validate types, replacement-map shape, and placeholder integrity."""
     if not isinstance(raw, str):
         raise TypeError("raw must be str")
     if not isinstance(corrected, str):
         raise TypeError("corrected must be str")
     if not isinstance(protections, ProtectedText):
         raise TypeError("protections must be a ProtectedText")
-    if raw != protections.text:
-        raise ValueError("raw must equal protections.text")
-
     replacements = protections.replacements
     if not isinstance(replacements, dict):
         raise ProtectionError("replacements must be a dict[str, str]")
