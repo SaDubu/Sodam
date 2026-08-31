@@ -1,0 +1,5 @@
+{
+  "job_id": "fixture-job-001",
+  "status": "archived",
+  "source": "fixture://inspection"
+}

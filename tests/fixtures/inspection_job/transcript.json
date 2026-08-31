@@ -1,0 +1,17 @@
+{
+  "segments": [
+    {
+      "segment_id": "segment-0001",
+      "start_seconds": 0.0,
+      "end_seconds": 1.25,
+      "text": "First fixture line."
+    },
+    {
+      "segment_id": "segment-0002",
+      "start_seconds": 1.25,
+      "end_seconds": 2.5,
+      "text": "Second fixture line."
+    }
+  ],
+  "final_text": "First fixture line.\nSecond fixture line."
+}

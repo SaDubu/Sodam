@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {
+      "case_id": "exact-openai",
+      "expected_text": "OpenAI released version 1.",
+      "actual_text": "OpenAI released version 1.",
+      "protected_tokens": ["OpenAI", "1"],
+      "auto_approved": true,
+      "duration_seconds": 0.1
+    },
+    {
+      "case_id": "exact-evidence",
+      "expected_text": "JFK met NASA on 2026-08-27.",
+      "actual_text": "JFK met NASA on 2026-08-27.",
+      "protected_tokens": ["JFK", "NASA", "2026-08-27"],
+      "auto_approved": false,
+      "duration_seconds": 0.2
+    },
+    {
+      "case_id": "unsafe-currency-change",
+      "expected_text": "The total is $1,200.",
+      "actual_text": "The total is $1200.",
+      "protected_tokens": ["$1,200"],
+      "auto_approved": true,
+      "duration_seconds": 0.3
+    }
+  ]
+}
