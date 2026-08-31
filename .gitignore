@@ -1,0 +1,40 @@
+# Python and test outputs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local environment and secrets
+.env
+.env.*
+*.local
+
+# Model downloads and partial files
+*.gguf
+*.safetensors
+*.ckpt
+*.onnx
+*.pt
+*.pth
+*.bin
+*.partial
+
+# Media artifacts
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+*.ogg
+
+# Local job data
+*.sqlite
+*.db
+*.parquet
+Sodam-data/

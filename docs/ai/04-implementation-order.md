@@ -185,3 +185,186 @@
 - **자동 검증:** 9개 segment와 순차 응답 RecordingRuntime으로 두 batch와 final synthesis, 총 3회 호출, final Summary text/evidence tuple을 확인하여 `B12 checks OK`를 받았다. 빈 Transcript와 unknown evidence 응답도 계약 예외로 거부했다. contracts/summarization 구문 검사는 `syntax OK`로 통과했다.
 - **형식·범위 검증:** `git diff --check -- backend/contracts.py backend/summarization.py`가 통과했다. 실제 Qwen/Ollama·네트워크·파일/DB I/O·subprocess·새 검증 파일은 사용하지 않았고, 전사문과 segment를 변경하지 않는다.
 - **남은 위험:** JSON 스키마·근거 ID만 기계적으로 검증하므로 실제 모델의 요약 품질·사실성·표현 적절성은 B13 통합과 T03 평가 단계에서 추가 평가해야 한다.
+
+### CR01 (B10-R) — 정규화된 보호 텍스트 검증 정정
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `backend/validation.py`
+- **정정 내용:** B08의 공백 정규화 결과가 `protections.text`와 다르더라도 B10 검증 입력으로 허용하도록 raw/protections 문자열 동등성 검사를 제거했다. placeholder의 known key, 순서, 누락, 복제 검증과 formatting/review 분류는 유지했다.
+- **자동 검증:** 정규화된 보호 텍스트 자동 승인, 의미 변경 review 분류, placeholder 손실·unknown·복제 거부를 직접 호출로 확인해 `CR01 checks OK`를 받았다. 구문 검사 `syntax OK`와 `git diff --check -- backend/validation.py`도 통과했다.
+- **남은 위험:** 이 정정은 B08→B10 입력 호환성만 해결한다. 교정된 텍스트를 원본 segment ID 근거와 함께 표현하는 계약은 CR02에서 별도로 처리했다.
+
+### CR02 — 교정 전사문과 근거 ID 연결
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `backend/contracts.py` (`ReviewedSegment`, `ReviewedTranscript`), `backend/storage.py` (`assemble_reviewed_transcript`), `backend/summarization.py` (`summarize_reviewed_transcript`)
+- **계약 대조:** 원본 `RawSegment`는 `ReviewedSegment.source`로 보존하고, 승인·복원 텍스트만 별도 `final_text`로 저장한다. reviewed transcript는 segment별 교정 텍스트의 newline join으로 조립되며, reviewed 요약 prompt는 source ID와 교정 텍스트만 포함한다.
+- **호환성 검증:** 기존 `Transcript`, `assemble_transcript()`, `summarize_transcript()`는 변경하지 않았고 raw 요약 직접 호출도 계속 통과했다.
+- **자동 검증:** reviewed 조립, source identity, 교정본-only prompt, 길이 불일치 거부, 빈 reviewed transcript 거부, 기존 raw 요약 동작을 확인해 `CR02 checks OK`를 받았다. 세 대상 파일의 구문 검사 `syntax OK`와 `git diff --check`도 통과했다.
+- **남은 위험:** B13은 모든 segment를 B07→B08→B09→B10→B07 restore 순서로 처리해 승인 텍스트 list를 만들고, CR02 조립/요약 함수를 호출해야 한다. 실제 adapter/runtime 구성과 사용자 review 결정은 B13 이후 범위다.
+
+### B13 — 주입형 로컬 작업 파이프라인 오케스트레이션
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `backend/main.py` (`PipelineResult`, `PipelineApplication`, `build_application`)
+- **명세 대조:** URL은 B04 획득 후 B05 추출, 로컬 입력은 B05 추출로 직접 분기한다. 이후 B06→B11 raw 조립, segment별 B07→B08→B09→CR01 B10→B07 복원, CR02 reviewed 조립·요약을 순서대로 조율한다. 모든 collaborator는 주입받은 Protocol 객체만 사용한다.
+- **lifecycle:** 성공은 queued부터 completed/cleaning을 거쳐 archived로 끝난다. 취소는 `request_cancellation` 뒤 cancelled/cleaning/archived로, 일반 예외 및 KeyboardInterrupt/SystemExit은 failed cleanup lifecycle을 시도한 뒤 원래 예외를 보존해 전파한다.
+- **자동 검증:** 메모리 stub으로 URL 성공·로컬 성공·취소·B09 교정 실패 cleanup을 직접 확인해 `B13 checks OK`를 받았다. 전체 성공 상태 전이와 KeyboardInterrupt cleanup·재전파도 `B13 lifecycle checks OK`로 통과했다. 실제 adapter, 파일, 네트워크, 모델, subprocess 실행은 없었다.
+- **형식·범위 검증:** `backend/main.py` 구문 검사 `syntax OK` 및 `git diff --check -- backend/main.py`가 통과했다. B13 제품 수정은 main.py 하나에 한정됐다.
+- **남은 위험:** 실제 다운로드/FFmpeg/STT/Qwen adapter 통합, 결과 영속화, 사용자 검토 UI, 재시도·병렬 처리·진행률 스트림은 후속 작업 범위다.
+
+### U01 — 데스크톱 UI 초기 작업 상태 계약
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `apps/desktop/src/state.ts` (`createInitialJobViewModel`)
+- **명세 대조:** factory는 빈 job/source label, queued status, null progress/summary를 가진 새 plain object를 매 호출마다 반환한다. 타입 선언과 review item 계약은 변경하지 않았다.
+- **자동 검증:** Node.js TypeScript type-stripping loader로 모듈을 직접 import해 정확한 초기 필드, own property, 새 객체 반환, 호출 간 독립성을 확인하여 `U01 checks OK`를 받았다. `git diff --check -- apps/desktop/src/state.ts`도 통과했다.
+- **범위·남은 위험:** Tauri 렌더링, backend IPC, URL/파일 선택, 작업 시작·취소, 진행률·검토 큐 상태 동기화는 구현하지 않았다. 실제 UI 통합은 후속 작업 범위다.
+
+### T02-01 — B02 작업 lifecycle 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_jobs.py`
+- **자동 검증:** 기존 `AGENTS.md` 상대 경로의 Job 생성·정규화·부수효과 없음, URL 정규화, 잘못된 source/options, immutable 허용 전이, 차단 전이, 취소 경계, `JobStateError` 상속을 pytest로 확인했다. skip 없이 `6 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_jobs.py`가 통과했다.
+- **범위 대조:** 테스트는 B02 공개 API와 읽기 전용 `AGENTS.md`만 사용하며 작업 디렉터리·네트워크·모델·DB·새 fixture를 만들지 않는다.
+- **발견된 위험:** Windows 절대 로컬 경로는 `urlparse()`가 drive letter를 scheme으로 해석해 B02에서 거부된다. 이번 테스트는 기존 상대 경로 성공 계약을 자동화했으며, 절대 경로 지원은 다음 B02-R 정정 작업에서 처리해야 한다.
+
+### B02-R — Windows 절대 로컬 경로 정정
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `backend/jobs.py` (`_normalize_source`)
+- **정정 내용:** `^[A-Za-z]:[\\/]` 형식의 drive 절대 경로를 URL scheme 판단 전에 인식해 기존 local-path resolve/regular-file 검증으로 보냈다. drive-relative `C:relative.txt`와 FTP 같은 비지원 scheme 처리는 유지했다.
+- **자동 검증:** 저장소 `AGENTS.md`의 backslash 및 slash 절대 경로가 queued Job으로 정규화되고, work_dir 부수효과 없이 반환됨을 확인하여 `B02-R checks OK`를 받았다. drive-relative·FTP 거부, jobs.py 구문 검사 `syntax OK`, `git diff --check`, 기존 T02-01 pytest 회귀 `6 passed`도 통과했다.
+- **남은 위험:** UNC 및 POSIX 경로의 추가 정책은 범위 밖이다. T02-01 pytest에는 다음 회귀 작업에서 Windows 절대 경로 사례를 추가해야 한다.
+
+### T02-01R — Windows 절대 로컬 경로 회귀 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_jobs.py`
+- **자동 검증:** `AGENTS.md`의 Windows 절대 backslash와 slash 경로를 각각 `create_job()`에 전달해 queued Job·정규화된 source·work_dir 미생성을 확인했다. 기존 URL·상대 경로·전이·취소 case도 포함해 pytest `6 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_jobs.py`가 통과했다.
+- **범위·남은 위험:** B02 제품 코드와 다른 테스트는 수정하지 않았고 파일·네트워크·모델 I/O는 없었다. UNC/POSIX 경로 정책은 범위 밖이다.
+
+### T02-02 — B10·CR01 변경 검증 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_validation.py`
+- **자동 검증:** CR01 normalized raw 입력의 safe 승인, whitespace/punctuation formatting 자동 승인, 한글 의미 변경의 raw 유지·review item, placeholder 손실·unknown·중복·누락·순서 변경 거부, 타입 위반, `ProtectedText`·replacements 불변성을 pytest로 확인했다. skip 없이 `12 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_validation.py`가 통과했다.
+- **범위·남은 위험:** 텍스트와 map만 사용했으며 파일·네트워크·모델 I/O 및 제품 코드 변경은 없다. 의미상 사실의 언어학적 판단과 사용자 review UI는 B10 범위 밖이다.
+
+### T02-03 — B07 보호·복원 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_protection.py`
+- **자동 검증:** glossary·URL·날짜·`$1,200`·`3000원`·쉼표 숫자·대문자 약어의 가역 보호, 반복 JFK의 위치별 독립 placeholder, 기존 placeholder 입력의 collision-free 재보호, glossary 오류, restore unknown/누락/복제/type 오류, map 불변성을 pytest로 확인했다. skip 없이 `13 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_protection.py`가 통과했다.
+- **범위·남은 위험:** 메모리 객체만 사용하며 파일·네트워크·모델 I/O와 B07 제품 코드 변경은 없다. Unicode 날짜/통화 표기 변형의 확대 검증은 별도 case가 필요하다.
+
+### T02-04 — B08 제한적 규칙 정규화 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_text_rules.py`
+- **자동 검증:** Unicode whitespace 축소·strip·문장부호 앞 공백 제거·세 종류 괄호 내부 공백 제거, placeholder 및 비공백 순서 보존, terminal sentence boundary slice-end index, malformed/missing/duplicate/unknown placeholder 입력, input map 불변성을 pytest로 확인했다. skip 없이 `9 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_text_rules.py`가 통과했다.
+- **범위·남은 위험:** 메모리 text/map만 사용하며 파일·네트워크·모델 I/O 및 B08 제품 코드 변경은 없다. 실제 자연어 띄어쓰기 품질과 Kiwi/KSS 통합은 범위 밖이다.
+
+### T02-05 — B09 Qwen 교정 응답 검증 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_correction.py`
+- **자동 검증:** recording runtime으로 유효 JSON의 `CorrectionResult`·changes·단일 호출과 prompt 내 target/context를 확인했다. invalid JSON·bytes 응답·runtime 예외, 보호 placeholder 유실/순서 변경, 중복 sentence boundary, 잘못된 context/runtime을 계약 예외로 검증했고 input 불변성도 확인했다. skip 없이 `9 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_correction.py`가 통과했다.
+- **범위·남은 위험:** 실제 Qwen/Ollama·네트워크·파일 I/O는 사용하지 않았고 B09 제품 코드는 수정하지 않았다. 실제 모델이 생성하는 다양한 유효하지만 경계적인 JSON 표현의 상호운용성은 이후 통합/평가 단계에서 확인한다.
+
+### T02-06 — B11 전사문 조립 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_transcript.py`
+- **자동 검증:** 정상 두 구간의 입력 순서·tuple·newline final text와 빈 list 결과를 확인했다. 중복/whitespace ID, 역순·음수 시간, blank raw text, 범위 밖 confidence, list가 아닌 입력과 RawSegment가 아닌 항목을 계약 예외로 검증하고 입력 list/segment 불변성도 확인했다. skip 없이 `11 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_transcript.py`가 통과했다.
+- **범위·남은 위험:** 메모리 RawSegment만 사용했으며 B11 제품 코드·파일/DB/네트워크/STT는 사용하지 않았다. 실제 STT의 장시간 timestamp precision과 overlap 정책은 통합 테스트 단계에서 추가 검증한다.
+
+### T02-07 — B12 근거 연결 계층형 요약 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_summarization.py`
+- **자동 검증:** 9개 segment의 2 batch + final synthesis 3회 호출과 batch/final prompt 및 evidence tuple을 검증했다. 단일 batch가 추가 synthesis 없이 반환되는 것, empty transcript, unknown evidence, invalid JSON, runtime 계약 오류 및 Transcript 불변성을 확인했다. skip 없이 `7 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_summarization.py`가 통과했다.
+- **범위·남은 위험:** recording runtime만 사용하고 실제 모델·네트워크·파일/DB I/O 및 B12 제품 코드는 변경하지 않았다. 요약의 사실성·문체 품질과 장문 response 경계는 T03 평가 및 통합 단계에서 확인한다.
+
+### T02-08 — B03 작업 JSON 저장 및 artifact 정리 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_storage.py`
+- **자동 검증:** 고유 job work directory에서 UTF-8 JSON write/read 왕복 및 경계를 확인했다. retention policy가 `metadata.json`만 보존하고 임시 artifact를 삭제하는 것, retention 없는 cleanup이 work directory까지 삭제하는 것, root 밖 경로·잘못된 artifact 이름·없는 artifact의 계약 예외를 검증했다. skip 없이 `5 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_storage.py`가 통과했고 `t02-storage-*` job directory 잔존 여부도 `artifact cleanup OK`로 확인했다.
+- **범위·남은 위험:** 생성·삭제는 승인된 `D:\AI-Legion\Sodam-data\tmp\jobs` 하위 고유 작업 폴더로 한정했으며 B03 제품 코드·실제 DB/네트워크/모델은 사용하지 않았다. Windows symlink 권한별 경계는 별도 환경에서 통합 검증이 필요하다.
+
+### T02-09 — B04 URL 검증 및 오디오 획득 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_sources.py`
+- **자동 검증:** 지원 YouTube URL 두 종류와 앞뒤 공백·비지원 scheme/host·빈 video ID·잘못된 port 거부를 확인했다. recording adapter 성공 경로의 정확한 1회 호출, `AudioArtifact` ID/path/content/work-dir 경계, 잘못된 adapter·root 밖 work_dir·adapter 오류·output 미생성을 검증했다. skip 없이 `10 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_sources.py` 및 `t02-sources-*` 잔존 검사 `artifact cleanup OK`가 통과했다.
+- **범위·남은 위험:** artifact 생성·정리는 승인된 `D:\AI-Legion\Sodam-data\tmp\jobs` 하위에 한정했으며 실제 다운로드·네트워크·B04 제품 코드는 사용하지 않았다. 실제 다운로드 adapter의 서비스별 실패와 Windows symlink 권한은 통합 테스트 범위다.
+
+### T02-10 — B05 로컬 미디어 표준 오디오 추출 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_media.py`
+- **자동 검증:** recording runner의 단일 호출과 `-i/-vn/-ac 1/-ar 16000/-sample_fmt s16` 정확한 argument vector, normalized output `AudioArtifact`과 nonempty file을 검증했다. 없는/비지원 source, runner 오류·missing output, root 밖 work_dir·기존 output, 잘못된 runner 계약을 확인했다. skip 없이 `6 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_media.py` 및 `t02-media-*` 잔존 검사 `artifact cleanup OK`가 통과했다.
+- **범위·남은 위험:** artifact 생성·정리는 승인된 `D:\AI-Legion\Sodam-data\tmp\jobs` 하위에 한정했으며 실제 FFmpeg/subprocess·네트워크·B05 제품 코드는 사용하지 않았다. 실제 codec 호환성·duration 및 Windows symlink 권한은 통합 테스트에서 확인한다.
+
+### T02-11 — B06 STT 시간 구간 표준화 단위 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/unit/test_transcription.py`
+- **자동 검증:** recording engine의 resolve된 path 1회 호출, blank-text filtering, 연속 segment ID, 시간/raw text/confidence 보존을 확인했다. 역순 시간·invalid confidence·generator container, 없는 audio path, 잘못된 engine 계약 및 AudioArtifact/response 불변성을 검증했다. skip 없이 `6 passed`, 구문 검사 `syntax OK`, `git diff --check -- tests/unit/test_transcription.py` 및 `t02-stt-*` 잔존 검사 `artifact cleanup OK`가 통과했다.
+- **범위·남은 위험:** artifact 생성·정리는 승인된 `D:\AI-Legion\Sodam-data\tmp\jobs` 하위에 한정했으며 실제 STT·네트워크·B06 제품 코드는 사용하지 않았다. 실제 엔진 반환 schema 변형과 장시간 audio 성능은 통합/평가 단계에서 확인한다.
+
+### T02 — B02~B12 단위 테스트 묶음 완료
+
+- **상태:** 완료
+- **완료 범위:** T02-01/T02-01R/T02-02/T02-03/T02-04와 이번 T02-05~T02-11로 B02, B03, B04, B05, B06, B07, B08, B09, B10/CR01, B11, B12 공개 계약의 정상·경계·오류 단위 테스트를 구현했다.
+- **최종 회귀:** `python -B -m pytest tests/unit -q` 결과 `94 passed, 2 skipped`; `git diff --check` 통과; `t02-*` 작업 전용 directory 잔존 검사 `T02 artifact cleanup OK`를 확인했다.
+- **범위·남은 위험:** 2개 skip은 기존 모델 설치/저장소 정책 test의 명시된 skip이며, 이번 T02 테스트가 원인이 아니다. 실제 다운로드·FFmpeg·STT·Qwen 실행, OS symlink 권한과 장시간 처리 성능은 T05 통합 및 T03 평가 단계에서 검증한다. 커밋·푸시는 수행하지 않았다.
+
+### T03 — 재현 가능한 전사문 교정 평가 도구
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정·생성 파일:** `tools/evaluate_transcript.py`, `tests/fixtures/evaluation_cases.json`, `tests/unit/test_evaluate_transcript.py`
+- **계약 대조:** CLI는 UTF-8 JSON fixture의 strict `cases` schema를 읽고 exact correction match, protected-token occurrence order/count preservation, risky auto-approval, fixture-declared duration의 합계·평균을 결정론적으로 산출한다. 실제 clock, 모델, 네트워크, 제품 파이프라인을 사용하지 않는다.
+- **자동 검증:** versioned fixture의 3개 case에서 total 3, exact 2, protected 2, risky auto approval 1, duration total 0.6 및 average 0.2를 확인했다. token 재배치 risk, invalid schema, CLI one-line JSON, fixture read-only 성질을 pytest로 검증해 `8 passed`를 받았다. CLI 실행·구문 검사 `syntax OK`와 대상 diff check도 통과했다.
+- **남은 위험:** fixture 기반 지표는 평가 입력의 품질과 대표성에 의존한다. 실제 모델 품질·wall-clock 성능·사용자 review 결과는 T03 fixture를 확대하고 T05/T04와 연결해 별도 평가해야 한다. 커밋·푸시는 수행하지 않았다.
+
+### T04 — 읽기 전용 작업 점검 CLI
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정·생성 파일:** `tools/inspect_job.py`, `tests/fixtures/inspection_job/metadata.json`, `transcript.json`, `review.json`, `summary.json`, `tests/unit/test_inspect_job.py`
+- **계약 대조:** CLI는 작업 디렉터리의 direct regular JSON artifacts 네 개를 읽어 metadata, 순서 보존 timeline, review queue, summary evidence를 detached report로 반환·출력한다. timestamp, final-text join, review schema, evidence ID를 엄격 검증하고 artifact를 변경하거나 모델/media/네트워크를 호출하지 않는다.
+- **자동 검증:** versioned fixture의 2개 timestamp segment, 1개 review item, summary evidence를 확인했다. 역순 timestamp·final text 불일치·unknown evidence·malformed review의 `ValueError`, one-line CLI JSON, fixture hash 불변성을 pytest로 검증해 `7 passed`를 받았다. CLI 실행·구문 검사 `syntax OK` 및 대상 diff check도 통과했다.
+- **남은 위험:** B13의 실제 persistent artifact schema와 연결되기 전에는 이 도구가 명세화된 JSON interchange contract만 검사한다. 대규모 artifact, OS symlink 권한, 실제 job DB 조회는 T05/운영 단계에서 추가 검증해야 한다. 커밋·푸시는 수행하지 않았다.
+
+### T05 — 주입형 파이프라인 통합 테스트
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `tests/integration/test_pipeline.py`
+- **자동 검증:** local `.mp3` success에서 injected runner/STT/Qwen 호출, glossary 보호·복원 후 reviewed text, Summary evidence, archived terminal status 및 work directory 제거를 검증했다. 시작 cancellation의 collaborator 미호출 및 archived cleanup, runner 일반 예외의 `MediaExtractionError` 재전파와 cleanup, `KeyboardInterrupt` 재전파와 best-effort cleanup도 확인했다. pytest `4 passed`, 구문 검사 `syntax OK`, 대상 diff check와 `t05-*` 잔존 검사 `artifact cleanup OK`가 통과했다.
+- **범위·남은 위험:** 생성·삭제 artifact는 승인된 `D:\AI-Legion\Sodam-data\tmp\jobs\t05-*` 하위에 한정했고 실제 download/FFmpeg/STT/Qwen·네트워크·subprocess·제품 코드는 사용하지 않았다. URL acquisition 성공, 중간 단계 cancellation, retry/concurrency/progress 및 작업 root 밖 삭제 경계는 더 넓은 통합·운영 검증 범위다. 커밋·푸시는 수행하지 않았다.
+
+### O01 — 안전한 로컬 모델 설치 계약
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `scripts/setup-models.ps1`, `models/manifest.json`, `tests/unit/test_model_setup.py`
+- **계약 대조:** `Install-SodamModels`는 strict schema v1 manifest와 HTTPS URL·safe leaf filename·lowercase SHA-256을 전부 검증한 뒤에만 repository 밖 model home을 만든다. 주입 downloader의 `.partial` output은 .NET SHA-256 검증 후에만 final filename으로 이동하고, hash mismatch 실패 시 partial을 정리하며 기존 target은 덮어쓰지 않는다. 기본 manifest는 실제 model profile/URL/checksum을 포함하지 않는 declaration-only `profiles: []`로 유지했다.
+- **자동 검증:** pytest temporary source/manifest와 injected local `Copy-Item` downloader로 successful install과 result fields/content를 확인했다. repository 내부 target, traversal filename, unknown profile, wrong checksum의 partial cleanup, existing target 보호를 검증해 `4 passed`를 받았다. default downloader 없이 `-File` invalid-profile entry path가 model home 생성·다운로드 없이 실패함도 확인했다. PowerShell dot-source compatibility와 `Get-FileHash` 미제공 환경은 script entry detection 및 .NET SHA-256으로 보정했다. diff check가 통과했다.
+- **남은 위험:** 실제 profile URL/checksum 및 runtime 등록은 아직 확정하지 않았으며 기본 downloader는 실행하지 않았다. 실제 대용량 download의 interruption/retry, file lock/race, 인증/프록시 정책은 model profile 승인 뒤 별도 운영 검증이 필요하다. 커밋·푸시는 수행하지 않았다.
+
+### O02 — 읽기 전용 저장소 청결 정책 검사
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정 파일:** `scripts/check-repository-clean.ps1`, `tests/unit/test_repository_policy.py`
+- **계약 대조:** `Test-SodamRepositoryClean`은 default read-only Git provider 또는 injected path provider의 unique relative paths만 검사한다. unsafe/missing paths, 금지 model/media/database extensions, manifest 외 models paths, configurable size overage, UTF-8 secret patterns을 deterministic violation report로 반환하며 Git/files를 변경하지 않는다. CLI는 clean 0, violation 1 exit으로 JSON report를 출력한다.
+- **자동 검증:** 합성 repo/provider로 safe duplicate path clean report, media/model/size/secret/path escape violations, invalid root/max size terminating error, input-file hash 불변성을 pytest로 검증해 `4 passed`를 받았다. 빈 violation accumulator를 PowerShell mandatory collection binding이 거부하는 문제는 `AllowEmptyCollection`으로 보정했다. 현재 repository CLI도 `checked_files: 43`, `is_clean: true`, `violations: []`로 통과했다. 테스트 fixture의 secret literal이 실제 repository scanner에 포착된 문제는 런타임 조합으로 바꿔 fixture 검증과 repo cleanliness를 함께 유지했다.
+- **남은 위험:** pattern 기반 검사는 complete DLP가 아니며 false positive/negative 가능성이 있다. untracked/LFS/binary provenance, secret rotation, CI policy enforcement은 별도 운영 작업이 필요하다. 커밋·푸시는 수행하지 않았다.
+
+### O03 — 운영·모델·Git 정책 문서화
+
+- **상태:** 구현 및 명세 검증 완료
+- **수정·생성 파일:** `README.md`, `.gitignore`
+- **문서 대조:** README를 실제 contract pipeline·fake-based test·T03 evaluation·T04 inspection·O01 installer·O02 policy 상태로 교체했다. Python 3.12/PowerShell 검증 명령, repository 밖 `D:\AI-Legion\Sodam-data\tmp\jobs` artifact root, cleanup 경계, external adapter/runtime 미구성 한계, schema v1 empty model declaration manifest와 별도 download approval 필요성을 명시했다.
+- **Git 정책 대조:** `.gitignore`은 Python/test cache, local environment/secret files, O01 model formats와 partial, media, local DB/data 및 repository 내 `Sodam-data/`를 ignore한다. `models/manifest.json`은 ignore하지 않으며 manifest schema를 보호하기 위해 수정하지 않았다.
+- **자동·수동 검증:** 전체 pytest `121 passed`, O02 current-repository report `is_clean: true`/empty violations, `git check-ignore`로 `.env`, `.gguf`, `.wav`, `Sodam-data/...sqlite` ignore 및 `models/manifest.json` unignored을 확인했다. 대상 diff check도 통과했다.
+- **남은 위험:** 실제 model profile URL/checksum, download/runtime registration, user data backup/retention, external adapter service policy는 미확정이며 별도 승인·운영 검증이 필요하다. 커밋·푸시는 수행하지 않았다.
