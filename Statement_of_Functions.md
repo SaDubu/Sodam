@@ -1,76 +1,63 @@
-# CI-01 — Desktop GitHub Actions 교정
+# CR-07 — 실제 Local Pipeline·Desktop Smoke 검증
 
 ## 작업 ID와 목적
 
-- 작업 ID: CI-01
-- 목적: `desktop-build` GitHub Actions가 Windows, Ubuntu, macOS에서
-  동일한 desktop 계약 테스트와 Tauri 번들을 실행할 수 있게 한다.
-- 배경: run `33421283486`에서 Windows는 PowerShell의 test glob 처리로,
-  Ubuntu/macOS는 Tauri 기본 PNG 아이콘 누락으로 실패했다.
+- 작업 ID: CR-07
+- 목적: CI에서 검증한 desktop bundle과 기존 local-first pipeline을 실제
+  짧은 WAV 한 건으로 연결해 backend 결과, progress/resilience 보고, Tauri
+  process 기동을 확인한다.
+
+## 승인된 입력·외부 동작
+
+- 입력: `D:\AI-Legion\Sodam-data\tmp\v2-e2e-r2\sample.wav`
+- 실행 runtime: repository 밖의 FFmpeg, faster-whisper `turbo`, local Ollama
+  `qwen3.6:35b-a3b-agent-64k` loopback endpoint
+- artifact: Sodam-data 아래 이 실행의 job 결과만 생성·보존한다. Git worktree와
+  source WAV는 수정·삭제하지 않는다.
+- 허용: local subprocess, local model inference, Tauri debug process start,
+  read-only job inspection.
 
 ## 수정 허용 범위
 
-- `apps/desktop/package.json`
-- `apps/desktop/src-tauri/tauri.conf.json`
-- `apps/desktop/src-tauri/icons/` 안의 platform icon assets
-- `apps/desktop/tests/build-contract.test.mjs`
-- `docs/ai/04-implementation-order.md`
 - `Statement_of_Functions.md`
+- `docs/ai/04-implementation-order.md`의 검증 기록
 
-수정 금지: Python backend, product logic, model/runtime 설정, workflows의
-trigger/권한, dependency version, signing, installer 배포, 실제 모델·미디어 실행.
+제품 코드·테스트·runtime/model 설정·workflow·installer configuration은 수정하지
+않는다. 새 제품 파일·모델 다운로드·URL download·GitHub release·installer 설치/
+제거·서명은 수행하지 않는다.
 
-## 구현 계약
+## 실행 계약
 
-### 1. 플랫폼 중립 Node 테스트 실행
+1. 전체 Python·desktop regression을 먼저 실행한다.
+2. `tools/run_local.py`를 `sample.wav`, `--mode run`, `--output-mode both`,
+   `--progress-format jsonl`, explicit STT model/Qwen tag로 실행한다.
+3. stdout의 terminal JSON, stderr JSONL progress, 저장된 job directory를 확인한다.
+   terminal은 `archived`, output mode는 `both`, report에는 resilience object가 있어야 한다.
+4. `tools/inspect_job.py`로 결과를 재열고 summary·introduction·review artifact가
+   읽히는지 확인한다.
+5. `npm run tauri:check`로 debug app을 compile하고, 실제 executable을 짧게
+   기동해 프로세스가 즉시 종료하지 않는지 확인한다. 모델 job을 UI로 중복 실행하지
+   않는다.
 
-- `npm test`는 PowerShell, sh, zsh에서 모두 동작해야 한다.
-- shell glob expansion에 의존하지 않고 `apps/desktop/tests`의 기존
-  `*.test.mjs` 파일을 Node test runner가 발견하게 한다.
-- 테스트 파일의 이름·테스트 의미를 바꾸지 않는다.
-
-### 2. Tauri 아이콘 집합
-
-- 기존 `icons/icon.ico`의 브랜드 이미지를 source로 사용한다.
-- Tauri가 요구하는 `icons/icon.png`, `icons/32x32.png`,
-  `icons/128x128.png`, `icons/128x128@2x.png`, `icons/icon.icns`,
-  `icons/icon.ico`를 repository에 둔다.
-- `tauri.conf.json`의 `bundle.icon`은 위 desktop icon set을 명시한다.
-- PNG는 square RGBA 32-bit이고, macOS용 ICNS와 Windows용 ICO는
-  각 platform build에 사용 가능해야 한다.
-- model·media·개인 데이터·certificate를 icon asset에 포함하지 않는다.
-
-## 테스트와 완료 기준
-
-다음을 실행한다.
+## 실행 명령과 통과 기준
 
 ```powershell
+D:\AI-Legion\Sodam-runtime\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
 npm --prefix apps/desktop test
 npm --prefix apps/desktop run check
 npm --prefix apps/desktop run build
+npm --prefix apps/desktop run tauri:check
 git diff --check
 ```
 
-추가 정적 검증:
-
-- package test script가 `tests/*.test.mjs` shell glob을 쓰지 않는다.
-- config가 Tauri의 다중 platform icon set을 모두 가리킨다.
-- icon 파일 모두 존재하고 비어 있지 않다.
-
-수동 검증:
-
-- GitHub Actions 재실행에서 Windows의 test step이 통과하고,
-  Linux/macOS가 icon missing 오류 없이 bundle 단계로 진입한다.
-
-## 구현하지 않을 범위
-
-- 실제 NSIS/MSI/DMG/AppImage 설치·서명·배포
-- Python backend 또는 local model smoke
-- GitHub release 생성
+- local CLI는 timeout/interrupt 없이 archived terminal 결과를 반환한다.
+- progress event는 최소 한 개 이상이며 final report의 resilience가 object다.
+- result root는 repository 밖, source WAV는 변경되지 않는다.
+- actual UI process가 5초 동안 생존하거나, OS policy blocker를 정확히 기록한다.
 
 ## 보고
 
-- 수정 파일 및 icon set 목록
-- 로컬 Node/TypeScript/build/diff 결과
-- GitHub Actions 재실행 결과
-- 남은 platform-specific bundle·signing 위험
+- regression 결과, 실제 runtime/version/input hash
+- job ID·result root·terminal status·output/review/resilience 요약
+- Tauri process smoke 결과와 OS policy blocker 여부
+- 수정 파일과 남은 실제 품질·installer·signing 위험

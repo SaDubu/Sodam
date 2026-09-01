@@ -1002,3 +1002,30 @@
   deprecation notice는 경고만 남았으며 job conclusion에는 영향을 주지 않았다.
 - **범위 제외:** Python/model pipeline, installer 실행·서명·실제 배포는 변경하지
   않는다.
+
+### CR-07 — 실제 Local Pipeline·Desktop Smoke 검증
+
+- **작업 종류:** 실제 runtime 사전점검·회귀·desktop process smoke
+- **대상 파일:** `Statement_of_Functions.md`, 이 구현 순서 문서만 수정했다.
+- **선행 작업:** CR-01~CR-06, CI-01
+- **입력 검증:** `D:\AI-Legion\Sodam-data\tmp\v2-e2e-r2\sample.wav`가 존재하며,
+  SHA-256은 `25D8DCB3477F2E9CC1B3D6EDF6BA994D1D837E1583FC4597F11293EC1DDCB391`,
+  크기는 1,920,078 bytes였다. source는 수정하지 않았다.
+- **회귀 결과:** 시스템 Python으로 `pytest -q -p no:cacheprovider`를 실행해
+  `252 passed, 1 skipped`를 확인했다. desktop `npm test`는 11 passed,
+  `npm run check`, `npm run build`, `npm run tauri:check`도 통과했다. debug
+  executable `src-tauri/target/debug/sodam-desktop.exe`도 생성됐다.
+- **실제 runtime 차단:** doctor는 configured Qwen tag
+  `qwen3.6:35b-a3b-agent-64k`가 local Ollama에 없다고 보고했다. 설치된 모델은
+  `qwen3:14b`, `qwen3:8b`뿐이므로 동작 의미를 바꾸는 임의 대체 실행은 하지
+  않았다. faster-whisper import probe는 `TimeoutExpired`로 실패했고, runtime
+  virtual environment에는 `pytest`도 설치되어 있지 않았다.
+- **desktop smoke 차단:** Windows Application Control이 unsigned debug
+  executable의 process start를 차단했다. executable은 compile됐지만 창, Python
+  backend, 모델 job은 시작되지 않았다. 이는 제품 코드 실패가 아니라 OS policy
+  blocker다.
+- **완료 상태:** 회귀·build·사전점검은 통과했으나 실제 CLI end-to-end와 시각 UI
+  smoke는 보류다. 다음에는 사용자가 정확한 Qwen tag의 local 설치(또는 명시적
+  대체 모델)를 승인하고, 개인 PC의 Application Control에서 해당 local executable
+  실행을 허용한 뒤 source hash를 다시 확인하여 재개한다. policy 우회, 모델 다운로드,
+  제품 코드 변경, installer 설치·서명, 커밋·푸시는 수행하지 않았다.
