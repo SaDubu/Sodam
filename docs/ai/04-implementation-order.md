@@ -995,7 +995,10 @@
   검증한다.
 - **자동 검증:** Node desktop 테스트 11 passed, TypeScript check 통과,
   frontend build 통과, `git diff --check` 통과.
-- **수동/CI 판정:** 이 기록의 커밋 push로 새 matrix를 실행한다. Windows는 test
-  step 통과, Ubuntu/macOS는 icon missing 오류 없이 bundle 단계로 진행해야 한다.
+- **CI 재실행 결과:** GitHub Actions run `33457690331`가 세 matrix 모두
+  성공했다. macOS DMG는 2분 50초, Ubuntu AppImage는 5분 23초, Windows NSIS는
+  6분 6초에 bundle과 unsigned artifact upload까지 통과했다. Windows test glob과
+  Linux/macOS `icon.png` 누락은 재현되지 않았다. GitHub-hosted action의 Node 20
+  deprecation notice는 경고만 남았으며 job conclusion에는 영향을 주지 않았다.
 - **범위 제외:** Python/model pipeline, installer 실행·서명·실제 배포는 변경하지
   않는다.
