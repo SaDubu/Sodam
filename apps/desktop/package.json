@@ -4,7 +4,7 @@
   "description": "Framework-independent desktop state contracts for a future Tauri shell.",
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test",
     "build": "node scripts/build.mjs",
     "tauri:check": "tauri build --debug --no-bundle"
   },

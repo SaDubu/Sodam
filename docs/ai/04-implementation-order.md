@@ -978,3 +978,24 @@
   변경과 무관한 dependency/toolchain blocker로 기록한다. 실제 Tauri 창·
   backend·모델·네트워크는 실행하지 않았다. CR-07 통합·수동 smoke가 다음
   작업이다.
+
+### CI-01 — Desktop GitHub Actions 교정
+
+- **작업 종류:** CI 호환성·Tauri platform asset 교정 및 기존 contract test 보강
+- **대상 파일:** `apps/desktop/package.json`, `apps/desktop/src-tauri/tauri.conf.json`,
+  `apps/desktop/src-tauri/icons/`, `apps/desktop/tests/build-contract.test.mjs`,
+  `Statement_of_Functions.md`
+- **선행 문제:** GitHub Actions run `33421283486`에서 Windows가 PowerShell의
+  `tests/*.test.mjs` glob을 확장하지 못해 test 단계에서 실패했고, Ubuntu/macOS는
+  `icons/icon.png` 부재로 `tauri::generate_context!()`가 실패했다.
+- **구현:** `npm test`를 platform-neutral `node --test` discovery로 변경했다.
+  기존 `icon.ico`에서 Tauri CLI로 32/128/256 PNG, ICO, ICNS와 AppX/mobile
+  icon asset을 생성했고, bundle config는 Tauri 공식 desktop icon set을 명시한다.
+  contract test는 test script, icon config 및 각 파일의 존재·비어 있지 않음을
+  검증한다.
+- **자동 검증:** Node desktop 테스트 11 passed, TypeScript check 통과,
+  frontend build 통과, `git diff --check` 통과.
+- **수동/CI 판정:** 이 기록의 커밋 push로 새 matrix를 실행한다. Windows는 test
+  step 통과, Ubuntu/macOS는 icon missing 오류 없이 bundle 단계로 진행해야 한다.
+- **범위 제외:** Python/model pipeline, installer 실행·서명·실제 배포는 변경하지
+  않는다.
