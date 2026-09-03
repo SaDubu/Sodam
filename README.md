@@ -96,13 +96,6 @@ git diff --check
 
 검증 기준선은 Python 전체 테스트 `252 passed, 1 skipped`, 데스크톱 Node 계약 테스트 `11 passed`, TypeScript `check` 및 frontend `build` 통과입니다. `cargo check`는 현재 호스트의 Tauri 의존성/Code Integrity 환경에서 `E0463 (can't find crate for tauri)`가 발생해 코드 결함과 분리된 환경 blocker로 기록했습니다. 실제 모델을 사용하는 60초 `both` 수직 슬라이스는 Ollama `qwen3.6:35b-a3b-agent-64k`, faster-whisper `turbo`, FFmpeg 9.0.1 조합으로 `archived`까지 확인했습니다.
 
-## 포트폴리오 관점의 구현 이력
-
-1. **B01~B12**: 불변 도메인 계약, 작업 상태, 안전한 저장·오디오 추출·전사·보호·정규화·요약을 단계별 명세로 구현했습니다.
-2. **T02~T05**: 각 계약의 fake/fixture, 단위·통합 테스트, 읽기 전용 점검 도구를 추가했습니다.
-3. **CR-01~CR-06**: Qwen 교정 응답 검증, locked/editable 재조립, bounded retry, identity/review 분류, CLI resilience report, Tauri stderr/UI bridge를 연결했습니다.
-4. **Product v2**: `summary`를 유지하면서 `introduction`과 `both` output mode, 실제 로컬 adapter 조립, 설치 진단·결과 재열기 흐름을 추가했습니다.
-
 ## 알려진 범위와 다음 과제
 
 이 저장소는 개인용 로컬 실행 후보입니다. 자동 모델 다운로드·클라우드 fallback·무단 URL 수집은 포함하지 않으며, 사용 권한이 있는 입력만 처리합니다. 다음 릴리스 전 과제는 깨끗한 Windows PC에서의 Tauri installer smoke, 실제 5개 영상에 대한 사람 품질평가, 모델/드라이버별 성능 기준, 필요 시 서명된 배포물 검증입니다.
