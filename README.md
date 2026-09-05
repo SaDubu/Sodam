@@ -214,7 +214,15 @@ git diff --check
 git pull --ff-only
 ```
 
-`apps/desktop`에는 별도의 Tauri UI가 보존되어 있습니다. 간단 Tk UI 실행에는 필요하지 않습니다. Tauri 개발 명령과 추가 도구는 [데스크톱 개발 안내](apps/desktop/README.md)를 참고하세요.
+## 문서 안내
+
+| 문서 | 용도 |
+| --- | --- |
+| 이 README | Windows 설치, 가상환경, Tk UI·CLI 실행 |
+| [Tauri UI 개발 안내](apps/desktop/README.md) | 별도 Tauri UI의 현재 범위와 빌드 방법 |
+| [테스트 데이터 안내](tests/fixtures/README.md) | 공개 JSON 예제와 검증 명령 |
+
+`apps/desktop`의 Tauri UI는 Tk UI와 기능 범위가 다릅니다. 일반 실행에는 이 README의 `start_simple_gui.ps1`을 사용하세요.
 
 공개 저장소에는 실행 코드, 테스트, 설치 안내, 모델 설정만 보관합니다. 모델 가중치·미디어·전사 결과·가상환경·비밀값은 커밋하지 않습니다. 설계·명세·작업지시·분석 문서는 로컬의 `.local/work-docs/`에 따로 보관하며 Git에서 제외합니다. 런타임이 읽는 `backend/prompts/introduction.md`는 제품 기능에 필요한 파일이므로 포함합니다.
 
