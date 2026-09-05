@@ -27,7 +27,7 @@ def _queued_job() -> Job:
 
 
 def test_create_job_normalizes_existing_local_source_without_side_effects() -> None:
-    source_path = Path("AGENTS.md").resolve()
+    source_path = Path(__file__).resolve()
 
     job = create_job(str(source_path), JobOptions())
     slash_job = create_job(str(source_path).replace("\\", "/"), JobOptions())
@@ -38,7 +38,8 @@ def test_create_job_normalizes_existing_local_source_without_side_effects() -> N
     assert slash_job.source == str(source_path)
     assert re.fullmatch(r"[0-9a-f]{32}", job.job_id)
     assert job.work_dir.name == job.job_id
-    assert job.work_dir.parent == Path(r"D:\AI-Legion\Sodam-data\tmp\jobs")
+    from backend.runtime_paths import JOB_WORK_ROOT
+    assert job.work_dir.parent == JOB_WORK_ROOT
     assert not job.work_dir.exists()
 
 

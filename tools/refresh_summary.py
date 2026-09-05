@@ -13,7 +13,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from backend.contracts import SodamError
-from backend.local_adapters import LocalOllamaRuntime
+from backend.local_adapters import LocalOllamaRuntime, MAX_QWEN_TIMEOUT_SECONDS
 from backend.persistence import RESULT_ROOT, refresh_resolved_summary
 
 
@@ -21,7 +21,12 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("job_id")
     parser.add_argument("--qwen-model", default="qwen3:8b")
-    parser.add_argument("--timeout-seconds", type=int, default=120)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=MAX_QWEN_TIMEOUT_SECONDS,
+        help=f"Qwen 응답 대기 상한(초, 1~{MAX_QWEN_TIMEOUT_SECONDS})",
+    )
     parser.add_argument("--result-root", type=Path, default=RESULT_ROOT)
     return parser
 

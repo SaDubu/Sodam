@@ -39,7 +39,7 @@ _TRANSITION_TABLE: dict[str, frozenset[str]] = {
 }
 
 # Work directory root — must exist *outside* the Git work tree
-_WORK_DIR_ROOT: pathlib.Path = pathlib.Path(r"D:\AI-Legion\Sodam-data\tmp\jobs")
+from .runtime_paths import JOB_WORK_ROOT as _WORK_DIR_ROOT
 
 # Cancel-able source states per B02 Section 4 (request_cancellation)
 _CANCELABLE_STATES: frozenset[str] = frozenset(

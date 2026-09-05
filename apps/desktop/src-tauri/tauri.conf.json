@@ -21,6 +21,10 @@
       "icons/icon.ico"
     ],
     "targets": ["nsis", "msi", "dmg", "appimage", "deb"],
+    "resources": {
+      "../../../backend": "backend",
+      "../../../tools/run_local.py": "tools/run_local.py"
+    },
     "createUpdaterArtifacts": false
   }
 }

@@ -7,10 +7,17 @@ from tools import refresh_summary
 
 
 def test_refresh_cli_emits_one_json_summary(monkeypatch, capsys) -> None:
+    seen: dict[str, object] = {}
+
     class Runtime:
         pass
 
-    monkeypatch.setattr(refresh_summary, "LocalOllamaRuntime", lambda *args, **kwargs: Runtime())
+    def fake_runtime(*args: object, **kwargs: object) -> Runtime:
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return Runtime()
+
+    monkeypatch.setattr(refresh_summary, "LocalOllamaRuntime", fake_runtime)
     monkeypatch.setattr(
         refresh_summary,
         "refresh_resolved_summary",
@@ -18,6 +25,7 @@ def test_refresh_cli_emits_one_json_summary(monkeypatch, capsys) -> None:
     )
 
     assert refresh_summary.main(["job-001"]) == 0
+    assert seen["kwargs"] == {"timeout_seconds": 600}
     assert json.loads(capsys.readouterr().out) == {
         "text": "Refreshed.", "evidence_segment_ids": ["segment-0001"]
     }

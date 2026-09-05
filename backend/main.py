@@ -18,13 +18,17 @@ from .contracts import (
     OutputMode,
     ProtectionError,
     ProtectedText,
+    ReviewMappingError,
+    ReviewSpan,
     RuleNormalizedText,
     ReviewedTranscript,
     Summary,
+    SummaryOutcome,
     TranscriptAssemblyError,
     VideoIntroduction,
 )
 from .correction import QwenRuntime, correct_with_retry
+from .generation import GenerationRequest, build_generation_prompt, generate_from_transcript
 from .jobs import request_cancellation, transition_job
 from .introduction import generate_video_introduction
 from .media import FfmpegRunner, extract_audio
@@ -36,7 +40,7 @@ from .protection import (
 )
 from .sources import SourceAudioAdapter, acquire_source_audio
 from .storage import CleanupPolicy, assemble_reviewed_transcript, assemble_transcript, cleanup_artifacts
-from .summarization import summarize_reviewed_transcript
+from .summarization import summarize_reviewed_transcript_outcome
 from .progress import Clock, ProgressSink, ProgressTracker
 from .text_rules import normalize_rules
 from .transcription import SttEngine, transcribe_audio
@@ -57,6 +61,7 @@ class PipelineResult:
     identity_group_count: int = 0
     correction_group_count: int = 0
     review_required_count: int = 0
+    summary_outcome: SummaryOutcome | None = None
 
 
 def _review_locations(
@@ -89,6 +94,55 @@ def _review_locations(
                 "end_offset": end,
             }
         )
+    return tuple(locations)
+
+
+def _review_locations_from_spans(
+    segment_id: str,
+    approved_text: str,
+    review_items: tuple[dict[str, str], ...],
+    spans: tuple[ReviewSpan, ...],
+    first_index: int,
+) -> tuple[dict[str, object], ...]:
+    """Validate exact source-coordinate ranges without searching repeated text."""
+    if not isinstance(segment_id, str) or not isinstance(approved_text, str):
+        raise TypeError("segment_id and approved_text must be strings")
+    if not segment_id.strip():
+        raise ValueError("segment_id must not be blank")
+    if not isinstance(review_items, tuple) or not isinstance(spans, tuple):
+        raise TypeError("review_items and spans must be tuples")
+    if type(first_index) is not int or first_index < 0:
+        raise ValueError("first_index must be a non-negative integer")
+    if len(review_items) != len(spans):
+        raise ReviewMappingError("review_span_count_invalid", segment_id)
+
+    locations: list[dict[str, object]] = []
+    previous_end = 0
+    for index, (item, span) in enumerate(zip(review_items, spans)):
+        if not isinstance(item, dict) or not isinstance(item.get("raw"), str):
+            raise TypeError("review items must contain a string raw value")
+        if not isinstance(span, ReviewSpan):
+            raise ReviewMappingError("review_span_range_invalid", segment_id)
+        raw = item["raw"]
+        start, end = span.start_offset, span.end_offset
+        if raw == "":
+            if start is not None or end is not None:
+                raise ReviewMappingError("review_span_range_invalid", segment_id)
+        else:
+            if (
+                type(start) is not int or type(end) is not int
+                or start < previous_end or end <= start or end > len(approved_text)
+            ):
+                raise ReviewMappingError("review_span_range_invalid", segment_id)
+            if approved_text[start:end] != raw:
+                raise ReviewMappingError("review_location_mismatch", segment_id)
+            previous_end = end
+        locations.append({
+            "review_index": first_index + index,
+            "segment_id": segment_id,
+            "start_offset": start,
+            "end_offset": end,
+        })
     return tuple(locations)
 
 
@@ -201,6 +255,7 @@ class PipelineApplication:
     stt_engine: SttEngine
     qwen_runtime: QwenRuntime
     glossary: tuple[str, ...] = ()
+    generation_runtime: QwenRuntime | None = None
 
     def _finish_failed(self, job: Job) -> None:
         """Best-effort failed cleanup; the original pipeline error wins."""
@@ -226,6 +281,8 @@ class PipelineApplication:
         cancellation_requested: Callable[[Job], bool] | None = None,
         progress_sink: ProgressSink | None = None,
         progress_clock: Clock | None = None,
+        summary_instruction: str | None = None,
+        introduction_instruction: str | None = None,
     ) -> PipelineResult:
         """Process one queued job while preserving the summary-compatible default."""
         if not isinstance(job, Job):
@@ -236,6 +293,10 @@ class PipelineApplication:
             raise TypeError("cancellation_requested must be callable or None")
         if output_mode not in {"summary", "introduction", "both"}:
             raise ValueError("output_mode must be summary, introduction, or both")
+        if summary_instruction is not None:
+            build_generation_prompt("pipeline instruction validation", summary_instruction)
+        if introduction_instruction is not None:
+            build_generation_prompt("pipeline instruction validation", introduction_instruction)
         if progress_sink is not None and progress_clock is None:
             progress_clock = _SystemClock()
         if progress_sink is not None and progress_clock is None:
@@ -343,9 +404,22 @@ class PipelineApplication:
                     proposal.editable_id: proposal.replacement
                     for proposal in outcome.edits
                 }
-                reassembled_group = tuple(
-                    reassemble_locked_parts(plan, replacements) for plan in group
-                )
+                reassembled_parts: list[str] = []
+                for plan in group:
+                    plan_editable_ids = {
+                        part.part_id
+                        for part in plan.parts
+                        if isinstance(part, EditablePart)
+                    }
+                    plan_replacements = {
+                        part_id: replacements[part_id]
+                        for part_id in plan_editable_ids
+                        if part_id in replacements
+                    }
+                    reassembled_parts.append(
+                        reassemble_locked_parts(plan, plan_replacements)
+                    )
+                reassembled_group = tuple(reassembled_parts)
                 if "\n".join(reassembled_group) != outcome.text:
                     raise ProtectionError("correction outcome text does not match reassembly")
                 for plan, reassembled_text in zip(group, reassembled_group):
@@ -403,46 +477,74 @@ class PipelineApplication:
                     normalized.text,
                     dict(protected.replacements),
                 )
-                review = validate_revision(
-                    normalized.text,
-                    candidate,
-                    validation_protected,
-                )
-                approved_text = restore_tokens(validation_protected, review.approved_text)
-                segment_review_items = review.review_items
-                if outcome.identity_applied:
-                    segment_review_items = segment_review_items + (
-                        {
-                            "kind": "correction_unapplied",
-                            "raw": plan.original_text,
-                            "corrected": plan.original_text,
-                            "reason": outcome.review_reason or "correction_unapplied",
-                        },
+                try:
+                    review = validate_revision(
+                        normalized.text,
+                        candidate,
+                        validation_protected,
                     )
-                review_locations = review_locations + _review_locations(
-                    segment.segment_id,
-                    approved_text,
-                    segment_review_items,
-                    len(review_items),
-                )
+                    approved_text = restore_tokens(validation_protected, review.approved_text)
+                    segment_review_items = review.review_items
+                    segment_spans = review.review_spans
+                    if outcome.identity_applied:
+                        if not approved_text:
+                            raise ReviewMappingError("review_span_range_invalid", segment.segment_id)
+                        segment_review_items = segment_review_items + (
+                            {
+                                "kind": "correction_unapplied",
+                                "raw": plan.original_text,
+                                "corrected": plan.original_text,
+                                "reason": outcome.review_reason or "correction_unapplied",
+                            },
+                        )
+                        segment_spans = segment_spans + (ReviewSpan(0, len(approved_text)),)
+                    review_locations = review_locations + _review_locations_from_spans(
+                        segment.segment_id,
+                        approved_text,
+                        segment_review_items,
+                        segment_spans,
+                        len(review_items),
+                    )
+                except (ProtectionError, TranscriptAssemblyError) as exc:
+                    exc.stage = "review_validation"
+                    exc.segment_id = segment.segment_id
+                    raise
                 approved_texts.append(approved_text)
                 review_items = review_items + segment_review_items
                 if progress_tracker is not None:
                     progress_tracker.advance(float(len(approved_texts)), "검토 항목 검증")
-            reviewed_transcript = assemble_reviewed_transcript(
-                raw_transcript,
-                approved_texts,
-            )
+            try:
+                reviewed_transcript = assemble_reviewed_transcript(
+                    raw_transcript,
+                    approved_texts,
+                )
+            except TranscriptAssemblyError as exc:
+                exc.stage = "review_validation"
+                raise
             result = cancellation_result()
             if result is not None:
                 return result
 
             summary: Summary | None = None
+            summary_outcome: SummaryOutcome | None = None
             introduction: VideoIntroduction | None = None
+            generation_runtime = self.generation_runtime or self.qwen_runtime
             if output_mode in {"summary", "both"}:
                 current = transition_job(current, "summarizing")
                 start_progress("summarization", 1, "요약 생성")
-                summary = summarize_reviewed_transcript(reviewed_transcript, self.qwen_runtime)
+                summary_result = generate_from_transcript(
+                    GenerationRequest(
+                        reviewed_transcript,
+                        "summary",
+                        summary_instruction,
+                    ),
+                    generation_runtime,
+                )
+                if not isinstance(summary_result, SummaryOutcome):
+                    raise TypeError("summary generation returned an invalid result")
+                summary_outcome = summary_result
+                if summary_outcome.status == "success":
+                    summary = summary_outcome.summary
                 complete_progress()
                 result = cancellation_result()
                 if result is not None:
@@ -453,7 +555,17 @@ class PipelineApplication:
                 current = transition_job(current, "summarizing")
             if output_mode in {"introduction", "both"}:
                 start_progress("introduction", 1, "영상 소개글 생성")
-                introduction = generate_video_introduction(reviewed_transcript, self.qwen_runtime)
+                introduction_result = generate_from_transcript(
+                    GenerationRequest(
+                        reviewed_transcript,
+                        "introduction",
+                        introduction_instruction,
+                    ),
+                    generation_runtime,
+                )
+                if not isinstance(introduction_result, VideoIntroduction):
+                    raise TypeError("introduction generation returned an invalid result")
+                introduction = introduction_result
                 complete_progress()
                 result = cancellation_result()
                 if result is not None:
@@ -478,6 +590,7 @@ class PipelineApplication:
                 identity_group_count=identity_group_count,
                 correction_group_count=len(groups),
                 review_required_count=len(review_items),
+                summary_outcome=summary_outcome,
             )
         except BaseException:
             if progress_tracker is not None and not progress_terminal:
@@ -497,6 +610,7 @@ def _validate_build_inputs(
     stt_engine: SttEngine,
     qwen_runtime: QwenRuntime,
     glossary: tuple[str, ...],
+    generation_runtime: QwenRuntime | None,
 ) -> None:
     """Validate injected collaborators without calling their external work."""
     if not callable(getattr(source_adapter, "acquire", None)):
@@ -507,6 +621,8 @@ def _validate_build_inputs(
         raise TypeError("stt_engine.transcribe must be callable")
     if not callable(getattr(qwen_runtime, "complete", None)):
         raise TypeError("qwen_runtime.complete must be callable")
+    if generation_runtime is not None and not callable(getattr(generation_runtime, "complete", None)):
+        raise TypeError("generation_runtime.complete must be callable")
     if not isinstance(glossary, tuple):
         raise TypeError("glossary must be a tuple[str, ...]")
 
@@ -528,6 +644,7 @@ def build_application(
     stt_engine: SttEngine,
     qwen_runtime: QwenRuntime,
     glossary: tuple[str, ...] = (),
+    generation_runtime: QwenRuntime | None = None,
 ) -> PipelineApplication:
     """Return a dependency-injected local pipeline without external setup."""
     _validate_build_inputs(
@@ -536,6 +653,7 @@ def build_application(
         stt_engine,
         qwen_runtime,
         glossary,
+        generation_runtime,
         )
     return PipelineApplication(
         source_adapter=source_adapter,
@@ -543,6 +661,7 @@ def build_application(
         stt_engine=stt_engine,
         qwen_runtime=qwen_runtime,
         glossary=glossary,
+        generation_runtime=generation_runtime,
     )
 
 

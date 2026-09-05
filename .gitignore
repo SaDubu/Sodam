@@ -10,12 +10,25 @@ htmlcov/
 .env
 .env.*
 *.local
+.venv/
+.hermes-venv/
+venv/
+
+# Private working notes and agent instructions (never publish)
+/.local/
+/docs/ai/
+/docs/*_failure_resolution_plan.md
+/Statement_of_Functions.md
+/AGENTS.md
+/.agents/
+/.codex/
 
 # Desktop development dependencies and compiler cache
 apps/desktop/node_modules/
 apps/desktop/*.tsbuildinfo
 apps/desktop/dist/
 apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
 
 # Model downloads and partial files
 *.gguf

@@ -1,16 +1,25 @@
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::backend_layout::{
+    BackendLayoutCandidates, BackendLayoutError, resolve_backend_layout,
+};
+
+// P08 skeleton only. No existing command calls this module until P08-01 is
+// separately specified and approved for implementation.
+mod backend_layout;
 
 const DEFAULT_QWEN_MODEL: &str = "qwen3.6:35b-a3b-agent-64k";
 const DEFAULT_MODEL_PATH: &str = r"D:\AI-Legion\Sodam-models\faster-whisper\turbo-0a363e9";
@@ -19,6 +28,8 @@ const DEFAULT_PYTHON_PATH: &str = r"D:\AI-Legion\Sodam-runtime\Scripts\python.ex
 const WINDOWS_HIDE_CONSOLE: u32 = 0x0800_0000;
 const MAX_STDERR_LINES: usize = 2;
 const MAX_STDERR_CHARS: usize = 240;
+const GENERATED_TEXT_PREFIX: &str = "SODAM_GENERATED_TEXT:";
+const MAX_GENERATED_TEXT_CHARS: usize = 4_000;
 
 #[derive(serde::Serialize)]
 struct ShellReadiness {
@@ -76,28 +87,33 @@ fn require_non_blank(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn repository_root() -> Result<PathBuf, String> {
-    if let Ok(value) = std::env::var("SODAM_REPOSITORY_ROOT") {
-        let candidate = PathBuf::from(value);
-        if candidate.join("tools").join("run_local.py").is_file() {
-            return Ok(candidate);
-        }
-        return Err("SODAM_REPOSITORY_ROOT에 tools/run_local.py가 없습니다.".to_owned());
-    }
-
-    let mut candidates = Vec::new();
+fn repository_root(app: Option<&AppHandle>) -> Result<PathBuf, String> {
+    let environment_override = std::env::var_os("SODAM_REPOSITORY_ROOT").map(PathBuf::from);
+    let resource_root = app.and_then(|handle| handle.path().resource_dir().ok());
+    let mut development_roots = Vec::new();
     if let Ok(current) = std::env::current_dir() {
-        candidates.push(current);
+        development_roots.push(current);
     }
     if let Ok(executable) = std::env::current_exe() {
-        candidates.extend(executable.ancestors().map(Path::to_path_buf));
+        development_roots.extend(executable.ancestors().map(Path::to_path_buf));
     }
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.join("tools").join("run_local.py").is_file())
-        .ok_or_else(|| {
-            "tools/run_local.py를 찾을 수 없습니다. SODAM_REPOSITORY_ROOT를 설정하세요.".to_owned()
-        })
+    resolve_backend_layout(BackendLayoutCandidates {
+        environment_override,
+        resource_root,
+        development_roots,
+    })
+    .map(|layout| layout.root)
+    .map_err(|error| match error {
+        BackendLayoutError::InvalidEnvironmentOverride => {
+            "SODAM_REPOSITORY_ROOT가 올바른 backend layout이 아닙니다.".to_owned()
+        }
+        BackendLayoutError::MissingBundleResource => {
+            "설치 리소스에 backend가 포함되지 않았습니다.".to_owned()
+        }
+        BackendLayoutError::MissingDevelopmentLayout => {
+            "backend resource를 찾을 수 없습니다.".to_owned()
+        }
+    })
 }
 
 fn python_command() -> Result<String, String> {
@@ -135,6 +151,55 @@ fn ffmpeg_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(DEFAULT_FFMPEG_PATH));
     candidate.is_file().then_some(candidate)
+}
+
+fn ollama_readiness() -> (bool, bool) {
+    let address: SocketAddr = match ("127.0.0.1", 11434).to_socket_addrs() {
+        Ok(mut addresses) => match addresses.next() {
+            Some(value) => value,
+            None => return (false, false),
+        },
+        Err(_) => return (false, false),
+    };
+    let mut stream = match TcpStream::connect_timeout(&address, Duration::from_millis(500)) {
+        Ok(value) => value,
+        Err(_) => return (false, false),
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    if stream
+        .write_all(
+            b"GET /api/tags HTTP/1.1\r\nHost: 127.0.0.1:11434\r\nConnection: close\r\n\r\n",
+        )
+        .is_err()
+    {
+        return (false, false);
+    }
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return (false, false);
+    }
+    let Some((headers, body)) = response.split_once("\r\n\r\n") else {
+        return (false, false);
+    };
+    if !headers.starts_with("HTTP/1.1 200") && !headers.starts_with("HTTP/1.0 200") {
+        return (false, false);
+    }
+    let ollama_ready = true;
+    let qwen_model_ready = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("models").and_then(serde_json::Value::as_array).cloned())
+        .map(|models| {
+            models.iter().any(|model| {
+                model
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|name| name == DEFAULT_QWEN_MODEL)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    (ollama_ready, qwen_model_ready)
 }
 
 fn operation_handle() -> (String, OperationHandle) {
@@ -178,6 +243,46 @@ fn emit_failure_with_category(
             "error": {"code": code, "category": category, "message": message}
         }),
     );
+}
+
+fn emit_failure_with_generated_text(
+    app: &AppHandle,
+    operation_id: &str,
+    code: &str,
+    category: &str,
+    message: String,
+    generated_text: Option<String>,
+) {
+    emit(
+        app,
+        "job_failed",
+        serde_json::json!({
+            "operation_id": operation_id,
+            "error": {
+                "code": code,
+                "category": category,
+                "message": message,
+                "generated_text": generated_text,
+            }
+        }),
+    );
+}
+
+fn parse_generated_text_line(line: &str) -> Option<String> {
+    let payload = line.strip_prefix(GENERATED_TEXT_PREFIX)?;
+    let value = serde_json::from_str::<String>(payload).ok()?;
+    if value.trim().is_empty()
+        || value.chars().count() > MAX_GENERATED_TEXT_CHARS
+        || value.contains('\0')
+        || value.contains("prompt:")
+        || value.contains("transcript:")
+        || value.contains("traceback:")
+        || value.contains("D:\\")
+        || value.contains("\\\\")
+    {
+        return None;
+    }
+    Some(value)
 }
 
 fn handle_progress_line(app: &AppHandle, operation_id: &str, line: &str) -> bool {
@@ -238,7 +343,12 @@ fn drain_stderr_line(
     operation_id: &str,
     line: &str,
     tail: &mut VecDeque<String>,
+    generated_text: &mut Option<String>,
 ) {
+    if let Some(value) = parse_generated_text_line(line) {
+        *generated_text = Some(value);
+        return;
+    }
     if !handle_progress_line(app, operation_id, line) {
         remember_stderr_line(tail, line);
     }
@@ -294,7 +404,7 @@ fn run_backend(
     output_mode: String,
     handle: OperationHandle,
 ) {
-    let root = match repository_root() {
+    let root = match repository_root(Some(&app)) {
         Ok(value) => value,
         Err(error) => {
             let _ = error;
@@ -403,9 +513,16 @@ fn run_backend(
 
     let mut cancelled = false;
     let mut stderr_tail = VecDeque::new();
+    let mut generated_text = None;
     let status = loop {
         while let Ok(line) = line_rx.try_recv() {
-            drain_stderr_line(&app, &operation_id, &line, &mut stderr_tail);
+            drain_stderr_line(
+                &app,
+                &operation_id,
+                &line,
+                &mut stderr_tail,
+                &mut generated_text,
+            );
         }
         if handle.cancel.load(Ordering::SeqCst) {
             cancelled = true;
@@ -438,13 +555,25 @@ fn run_backend(
         }
     };
     while let Ok(line) = line_rx.try_recv() {
-        drain_stderr_line(&app, &operation_id, &line, &mut stderr_tail);
+        drain_stderr_line(
+            &app,
+            &operation_id,
+            &line,
+            &mut stderr_tail,
+            &mut generated_text,
+        );
     }
     if let Some(thread) = stderr_thread {
         let _ = thread.join();
     }
     while let Ok(line) = line_rx.try_recv() {
-        drain_stderr_line(&app, &operation_id, &line, &mut stderr_tail);
+        drain_stderr_line(
+            &app,
+            &operation_id,
+            &line,
+            &mut stderr_tail,
+            &mut generated_text,
+        );
     }
     let stdout_text = stdout_thread
         .and_then(|thread| thread.join().ok())
@@ -478,12 +607,13 @@ fn run_backend(
         } else {
             format!("backend 작업에 실패했습니다: {}", tail)
         };
-        emit_failure_with_category(
+        emit_failure_with_generated_text(
             &app,
             &operation_id,
             "BACKEND_FAILED",
             category,
             message,
+            generated_text,
         );
     }
     remove_operation(&operation_id);
@@ -496,39 +626,52 @@ fn remove_operation(operation_id: &str) {
 }
 
 #[tauri::command]
-fn doctor_report() -> Result<serde_json::Value, String> {
-    let root = repository_root();
+fn doctor_report(app: AppHandle) -> Result<serde_json::Value, String> {
+    let root = repository_root(Some(&app));
     let python = python_command();
     let ffmpeg = ffmpeg_path().is_some();
     let model = model_path().is_dir();
+    let (ollama, qwen_model) = ollama_readiness();
     let script_ready = root.is_ok();
     let python_ready = python.is_ok();
     let backend_connected = script_ready && python_ready;
     let mut required_actions = Vec::new();
     if !script_ready {
-        required_actions.push("SODAM_REPOSITORY_ROOT 또는 tools/run_local.py 확인");
+        required_actions.push("설치 리소스의 backend 포함 여부 확인");
     }
     if !python_ready {
-        required_actions.push("SODAM_PYTHON 확인");
+        required_actions.push("Python 실행 환경 설정");
     }
     if !ffmpeg {
-        required_actions.push("SODAM_FFMPEG 절대 경로 설정");
+        required_actions.push("FFmpeg 실행 파일 경로 설정");
     }
     if !model {
-        required_actions.push("faster-whisper 모델 경로 확인");
+        required_actions.push("faster-whisper 모델 경로 설정");
+    }
+    if !ollama {
+        required_actions.push("Ollama를 127.0.0.1:11434에서 실행");
+    }
+    if !qwen_model {
+        required_actions.push("qwen3.6:35b-a3b-agent-64k 모델 준비");
     }
     Ok(serde_json::json!({
-        "is_ready": backend_connected && ffmpeg && model,
+        "is_ready": backend_connected && ffmpeg && model && ollama && qwen_model,
         "backend_connected": backend_connected,
         "qwen_model": DEFAULT_QWEN_MODEL,
-        "checks": {"python": python_ready, "backend_script": script_ready, "ffmpeg": ffmpeg, "stt_model": model},
+        "backend_resource_ready": script_ready,
+        "python_ready": python_ready,
+        "ffmpeg_ready": ffmpeg,
+        "stt_model_ready": model,
+        "ollama_ready": ollama,
+        "qwen_model_ready": qwen_model,
+        "checks": {"python": python_ready, "backend_script": script_ready, "ffmpeg": ffmpeg, "stt_model": model, "ollama": ollama, "qwen_model": qwen_model},
         "required_actions": required_actions,
     }))
 }
 
 #[tauri::command]
-fn shell_readiness() -> ShellReadiness {
-    let connected = repository_root().is_ok() && python_command().is_ok();
+fn shell_readiness(app: AppHandle) -> ShellReadiness {
+    let connected = repository_root(Some(&app)).is_ok() && python_command().is_ok();
     ShellReadiness {
         shell_version: env!("CARGO_PKG_VERSION"),
         backend_connected: connected,

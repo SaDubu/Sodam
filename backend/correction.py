@@ -378,10 +378,20 @@ def correct_with_retry(
                 last_reason if attempt_number > 1 else None,
             )
             replacement_map = {proposal.editable_id: proposal.replacement for proposal in proposals}
-            text = "\n".join(
-                reassemble_locked_parts(plan, replacement_map)
-                for plan in plan_group
-            )
+            reassembled: list[str] = []
+            for plan in plan_group:
+                plan_editable_ids = {
+                    part.part_id
+                    for part in plan.parts
+                    if isinstance(part, EditablePart)
+                }
+                plan_replacements = {
+                    part_id: replacement_map[part_id]
+                    for part_id in plan_editable_ids
+                    if part_id in replacement_map
+                }
+                reassembled.append(reassemble_locked_parts(plan, plan_replacements))
+            text = "\n".join(reassembled)
             attempts.append(CorrectionAttempt(attempt_number, "accepted"))
             return CorrectionOutcome(
                 text=text,

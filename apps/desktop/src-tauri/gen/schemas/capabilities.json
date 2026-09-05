@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Minimal main-window capability with no plugins or backend commands.","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open"]}}

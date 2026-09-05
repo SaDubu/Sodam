@@ -2,6 +2,7 @@
 
 import json
 import re
+from dataclasses import replace
 
 from .contracts import (
     EmptyTranscriptError,
@@ -10,15 +11,45 @@ from .contracts import (
     ReviewedSegment,
     ReviewedTranscript,
     Summary,
+    SummaryOutcome,
     Transcript,
 )
 from .correction import QwenRuntime
+from .model_response import normalize_json_response
 
 
 MAX_SEGMENTS_PER_BATCH = 8
 MAX_SUMMARY_CHARACTERS = 1_000
+MAX_REDUCE_FAN_IN = 8
+MAX_REDUCE_PROMPT_CHARACTERS = 12_000
+MAX_ROOT_SUMMARIES = 8
+MAX_SUMMARY_ATTEMPTS = 3
+SUMMARY_FAILURE_CATEGORIES = frozenset(
+    {"batch_failed", "reduce_failed", "final_failed", "retry_exhausted"}
+)
+SUMMARY_DIAGNOSTIC_CODES = frozenset(
+    {
+        "response_empty",
+        "markdown_fenced_json",
+        "json_parse_invalid",
+        "schema_invalid",
+        "evidence_invalid",
+        "summary_constraint_invalid",
+        "runtime_unavailable",
+    }
+)
+_FORMAT_REPAIR_INSTRUCTION = (
+    "Your previous response did not satisfy the output format. "
+    "Return raw JSON only. Do not use Markdown fences. "
+    "Do not add commentary before or after the JSON object."
+)
 
 _SENTENCE_RE = re.compile(r"[^.!?]+(?:[.!?]+|$)")
+
+def _normalize_summary_response(raw: object) -> tuple[str, str]:
+    """Keep the legacy tuple helper while using the common normalizer."""
+    normalized = normalize_json_response(raw)
+    return normalized.text, "markdown_fenced_json" if normalized.was_fenced else "unchanged"
 
 
 def _validate_inputs(transcript: Transcript, runtime: QwenRuntime) -> None:
@@ -61,14 +92,21 @@ def _sentence_count(text: str) -> int:
 
 def _parse_summary_response(raw: object, allowed_ids: set[str]) -> Summary:
     """Validate one strict JSON summary response against its allowed evidence."""
-    if not isinstance(raw, str):
-        raise ModelResponseError("runtime response must be a str")
+    clean_text = normalize_json_response(raw).text
     try:
-        payload = json.loads(raw)
+        payload = json.loads(clean_text)
     except (TypeError, ValueError) as exc:
-        raise ModelResponseError("runtime response is not valid JSON") from exc
+        error = ModelResponseError("runtime response is not valid JSON")
+        error.diagnostic_code = "json_parse_invalid"
+        error.response_empty = False
+        error.__cause__ = exc
+        raise error
+
     if not isinstance(payload, dict) or set(payload) != {"text", "evidence_segment_ids"}:
-        raise ModelResponseError("response must contain exactly text and evidence_segment_ids")
+        error = ModelResponseError("response schema is invalid")
+        error.diagnostic_code = "schema_invalid"
+        error.response_empty = False
+        raise error
 
     text = payload["text"]
     if (
@@ -77,24 +115,42 @@ def _parse_summary_response(raw: object, allowed_ids: set[str]) -> Summary:
         or text != text.strip()
         or len(text) > MAX_SUMMARY_CHARACTERS
     ):
-        raise ModelResponseError("summary text must be trimmed and within bounds")
+        error = ModelResponseError("summary text violates constraints")
+        error.diagnostic_code = "summary_constraint_invalid"
+        error.response_empty = False
+        raise error
     if not 1 <= _sentence_count(text) <= 2:
-        raise ModelResponseError("summary text must contain one or two sentences")
+        error = ModelResponseError("summary text violates sentence constraints")
+        error.diagnostic_code = "summary_constraint_invalid"
+        error.response_empty = False
+        raise error
 
     evidence = payload["evidence_segment_ids"]
     if not isinstance(evidence, list) or not evidence:
-        raise ModelResponseError("evidence_segment_ids must be a non-empty list")
+        error = ModelResponseError("evidence list is invalid")
+        error.diagnostic_code = "evidence_invalid"
+        error.response_empty = False
+        raise error
     if any(
         not isinstance(segment_id, str)
         or not segment_id
         or segment_id != segment_id.strip()
         for segment_id in evidence
     ):
-        raise ModelResponseError("evidence IDs must be non-blank strings")
+        error = ModelResponseError("evidence IDs are invalid")
+        error.diagnostic_code = "evidence_invalid"
+        error.response_empty = False
+        raise error
     if len(set(evidence)) != len(evidence):
-        raise ModelResponseError("evidence IDs must not be duplicated")
+        error = ModelResponseError("evidence IDs are duplicated")
+        error.diagnostic_code = "evidence_invalid"
+        error.response_empty = False
+        raise error
     if any(segment_id not in allowed_ids for segment_id in evidence):
-        raise ModelResponseError("evidence IDs must belong to the supplied transcript")
+        error = ModelResponseError("evidence ID is outside the supplied transcript")
+        error.diagnostic_code = "evidence_invalid"
+        error.response_empty = False
+        raise error
     return Summary(text=text, evidence_segment_ids=tuple(evidence))
 
 
@@ -104,9 +160,81 @@ def _call_runtime(runtime: QwenRuntime, prompt: str, allowed_ids: set[str]) -> S
         response = runtime.complete(prompt)
     except (KeyboardInterrupt, SystemExit):
         raise
+    except ModelResponseError:
+        raise
     except Exception as exc:
-        raise ModelResponseError("runtime.complete raised an error") from exc
+        error = ModelResponseError("runtime.complete raised an error")
+        error.diagnostic_code = "runtime_unavailable"
+        error.response_empty = False
+        error.__cause__ = exc
+        raise error
     return _parse_summary_response(response, allowed_ids)
+
+
+def _summary_failure_category(error: BaseException, stage: str) -> str:
+    """Map one failed summary call to a stable, non-sensitive category."""
+    if stage not in {"batch", "reduce", "final"}:
+        raise ValueError("stage must be batch, reduce, or final")
+    if stage == "batch":
+        return "batch_failed"
+    if stage == "reduce":
+        return "reduce_failed"
+    return "final_failed"
+
+
+def _tag_summary_error(error: BaseException, category: str, attempts: int) -> ModelResponseError:
+    """Return a safe summary error carrying only allowlisted retry metadata."""
+    if category not in SUMMARY_FAILURE_CATEGORIES:
+        raise ValueError("unsupported summary failure category")
+    safe = ModelResponseError("summary runtime failed after bounded retries")
+    safe.__cause__ = error
+    safe.summary_failure_category = category
+    safe.attempt_count = attempts
+    diagnostic = getattr(error, "diagnostic_code", None)
+    safe.diagnostic_code = (
+        diagnostic
+        if isinstance(diagnostic, str) and diagnostic in SUMMARY_DIAGNOSTIC_CODES
+        else "runtime_unavailable"
+    )
+    safe.response_empty = bool(getattr(error, "response_empty", False))
+    return safe
+
+
+def _call_runtime_with_retry(
+    runtime: QwenRuntime,
+    prompt: str,
+    allowed_ids: set[str],
+    stage: str,
+    max_attempts: int = MAX_SUMMARY_ATTEMPTS,
+) -> tuple[Summary, int]:
+    """Call and validate a summary runtime response with bounded retries."""
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("prompt must be a non-blank string")
+    if not isinstance(allowed_ids, set) or not allowed_ids:
+        raise ValueError("allowed_ids must be a non-empty set")
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int):
+        raise TypeError("max_attempts must be an int")
+    if not 1 <= max_attempts <= MAX_SUMMARY_ATTEMPTS:
+        raise ValueError("max_attempts is outside the bounded retry limit")
+    last_error: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            attempt_prompt = (
+                prompt
+                if attempt == 1
+                else prompt + "\n\n" + _FORMAT_REPAIR_INSTRUCTION
+            )
+            return _call_runtime(runtime, attempt_prompt, allowed_ids), attempt
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
+            last_error = exc
+    assert last_error is not None
+    raise _tag_summary_error(
+        last_error,
+        _summary_failure_category(last_error, stage),
+        max_attempts,
+    )
 
 
 def _build_batch_prompt(batch: tuple[RawSegment, ...]) -> str:
@@ -213,28 +341,262 @@ def _build_final_prompt(batch_summaries: tuple[Summary, ...]) -> str:
     )
 
 
+def _build_reduce_prompt(group: tuple[Summary, ...]) -> str:
+    """Build a deterministic prompt for reducing validated summaries."""
+    if not group:
+        raise ValueError("summary group must not be empty")
+    records = [
+        {
+            "text": summary.text,
+            "evidence_segment_ids": list(summary.evidence_segment_ids),
+        }
+        for summary in group
+    ]
+    return "\n".join(
+        (
+            "Return exactly one JSON object and nothing else.",
+            "Write a concise, factual Korean summary using every supplied summary.",
+            "Do not add facts outside the supplied summaries.",
+            "Use only supplied segment IDs as evidence.",
+            "The text field must contain exactly one or two complete sentences.",
+            '{"text":"summary", "evidence_segment_ids":["segment-id"]}',
+            "Validated summaries to reduce:",
+            json.dumps(records, ensure_ascii=False),
+        )
+    )
+
+
+def _partition_summary_groups(
+    summaries: tuple[Summary, ...],
+    max_chars: int = MAX_REDUCE_PROMPT_CHARACTERS,
+    fan_in: int = MAX_REDUCE_FAN_IN,
+) -> tuple[tuple[Summary, ...], ...]:
+    """Partition summaries deterministically under fan-in and prompt limits."""
+    if not isinstance(summaries, tuple):
+        raise TypeError("summaries must be a tuple")
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars <= 0:
+        raise ValueError("max_chars must be a positive integer")
+    if isinstance(fan_in, bool) or not isinstance(fan_in, int) or fan_in <= 0:
+        raise ValueError("fan_in must be a positive integer")
+
+    groups: list[tuple[Summary, ...]] = []
+    current: list[Summary] = []
+    for summary in summaries:
+        if not isinstance(summary, Summary):
+            raise ValueError("summaries must contain Summary values")
+        candidate = tuple(current + [summary])
+        if current and (
+            len(current) >= fan_in
+            or len(_build_reduce_prompt(candidate)) > max_chars
+        ):
+            groups.append(tuple(current))
+            current = [summary]
+            candidate = (summary,)
+        if len(_build_reduce_prompt(candidate)) > max_chars:
+            raise ModelResponseError("summary reduce prompt exceeds character limit")
+        current = list(candidate)
+    if current:
+        groups.append(tuple(current))
+    return tuple(groups)
+
+
+def _reduce_summary_group(
+    group: tuple[Summary, ...],
+    runtime: QwenRuntime,
+    allowed_ids: set[str],
+) -> Summary:
+    """Reduce one bounded Summary group while preserving evidence boundaries."""
+    if not group:
+        raise ValueError("summary group must not be empty")
+    group_ids = {
+        segment_id
+        for summary in group
+        for segment_id in summary.evidence_segment_ids
+    }
+    if not group_ids.issubset(allowed_ids):
+        raise ValueError("allowed_ids must contain group evidence IDs")
+    prompt = _build_reduce_prompt(group)
+    if len(prompt) > MAX_REDUCE_PROMPT_CHARACTERS:
+        raise ModelResponseError("summary reduce prompt exceeds character limit")
+    return _call_runtime(runtime, prompt, group_ids)
+
+
+def _reduce_summary_group_with_retry(
+    group: tuple[Summary, ...],
+    runtime: QwenRuntime,
+    allowed_ids: set[str],
+) -> tuple[Summary, int]:
+    """Retry one validated reduce group without changing its evidence scope."""
+    if not group:
+        raise ValueError("summary group must not be empty")
+    group_ids = {
+        segment_id
+        for summary in group
+        for segment_id in summary.evidence_segment_ids
+    }
+    prompt = _build_reduce_prompt(group)
+    return _call_runtime_with_retry(runtime, prompt, group_ids, "reduce")
+
+
+def _select_fallback_summary(
+    summaries: tuple[Summary, ...],
+    all_ids: set[str],
+) -> Summary:
+    """Select the first validated candidate without inventing or merging text."""
+    if not summaries:
+        raise ModelResponseError("no validated summary is available for fallback")
+    for summary in summaries:
+        if not isinstance(summary, Summary):
+            raise ValueError("fallback candidates must contain Summary values")
+        if not set(summary.evidence_segment_ids).issubset(all_ids):
+            raise ModelResponseError("fallback evidence is outside the transcript")
+    return summaries[0]
+
+
+def _hierarchical_summarize(
+    summaries: tuple[Summary, ...],
+    runtime: QwenRuntime,
+    all_ids: set[str],
+) -> SummaryOutcome:
+    """Reduce intermediate summaries until a bounded final synthesis is possible."""
+    if not summaries:
+        raise ValueError("summaries must not be empty")
+    current = tuple(summaries)
+    attempt_count = 0
+    while len(current) > MAX_ROOT_SUMMARIES:
+        groups = _partition_summary_groups(current)
+        reduced: list[Summary] = []
+        for group in groups:
+            try:
+                summary, attempts = _reduce_summary_group_with_retry(
+                    group, runtime, all_ids
+                )
+            except ModelResponseError as exc:
+                fallback = _select_fallback_summary(current, all_ids)
+                category = getattr(exc, "summary_failure_category", "reduce_failed")
+                return SummaryOutcome(
+                    fallback,
+                    "fallback",
+                    category if category in SUMMARY_FAILURE_CATEGORIES else "reduce_failed",
+                    attempt_count + int(getattr(exc, "attempt_count", MAX_SUMMARY_ATTEMPTS)),
+                    "reduce",
+                )
+            reduced.append(summary)
+            attempt_count += attempts
+        current = tuple(reduced)
+    if len(current) == 1:
+        return SummaryOutcome(current[0], "success", None, attempt_count)
+    final_prompt = _build_final_prompt(current)
+    if len(final_prompt) > MAX_REDUCE_PROMPT_CHARACTERS:
+        raise ModelResponseError("final summary prompt exceeds character limit")
+    try:
+        final, attempts = _call_runtime_with_retry(
+            runtime, final_prompt, all_ids, "final"
+        )
+    except ModelResponseError as exc:
+        fallback = _select_fallback_summary(current, all_ids)
+        category = getattr(exc, "summary_failure_category", "final_failed")
+        return SummaryOutcome(
+            fallback,
+            "fallback",
+            category if category in SUMMARY_FAILURE_CATEGORIES else "final_failed",
+            attempt_count + int(getattr(exc, "attempt_count", MAX_SUMMARY_ATTEMPTS)),
+            "reduce",
+        )
+    return SummaryOutcome(final, "success", None, attempt_count + attempts)
+
+
+def _fallback_error(outcome: SummaryOutcome) -> ModelResponseError:
+    """Convert a review-only outcome to the legacy exception API safely."""
+    error = ModelResponseError("summary generation returned a review-only fallback")
+    error.summary_failure_category = outcome.failure_category or "retry_exhausted"
+    error.attempt_count = outcome.attempt_count
+    return error
+
+
+def summarize_transcript_outcome(
+    transcript: Transcript,
+    runtime: QwenRuntime,
+) -> SummaryOutcome:
+    """Return a success or review-only fallback outcome for a raw transcript."""
+    _validate_inputs(transcript, runtime)
+    all_ids = {segment.segment_id for segment in transcript.segments}
+    batch_summaries: list[Summary] = []
+    attempt_count = 0
+    for index in range(0, len(transcript.segments), MAX_SEGMENTS_PER_BATCH):
+        batch = transcript.segments[index : index + MAX_SEGMENTS_PER_BATCH]
+        batch_ids = {segment.segment_id for segment in batch}
+        try:
+            summary, attempts = _call_runtime_with_retry(
+                runtime, _build_batch_prompt(batch), batch_ids, "batch"
+            )
+        except ModelResponseError as exc:
+            if not batch_summaries:
+                raise
+            fallback = _select_fallback_summary(tuple(batch_summaries), all_ids)
+            error_category = getattr(exc, "summary_failure_category", "batch_failed")
+            return SummaryOutcome(
+                fallback,
+                "fallback",
+                error_category if error_category in SUMMARY_FAILURE_CATEGORIES else "batch_failed",
+                attempt_count + int(getattr(exc, "attempt_count", MAX_SUMMARY_ATTEMPTS)),
+                "batch",
+            )
+        batch_summaries.append(summary)
+        attempt_count += attempts
+
+    if len(batch_summaries) == 1:
+        return SummaryOutcome(batch_summaries[0], "success", None, attempt_count)
+    outcome = _hierarchical_summarize(tuple(batch_summaries), runtime, all_ids)
+    return replace(outcome, attempt_count=attempt_count + outcome.attempt_count)
+
+
+def summarize_reviewed_transcript_outcome(
+    transcript: ReviewedTranscript,
+    runtime: QwenRuntime,
+) -> SummaryOutcome:
+    """Return a success or fallback outcome for approved reviewed text."""
+    _validate_reviewed_inputs(transcript, runtime)
+    all_ids = {segment.source.segment_id for segment in transcript.segments}
+    batch_summaries: list[Summary] = []
+    attempt_count = 0
+    for index in range(0, len(transcript.segments), MAX_SEGMENTS_PER_BATCH):
+        batch = transcript.segments[index : index + MAX_SEGMENTS_PER_BATCH]
+        batch_ids = {segment.source.segment_id for segment in batch}
+        try:
+            summary, attempts = _call_runtime_with_retry(
+                runtime, _build_reviewed_batch_prompt(batch), batch_ids, "batch"
+            )
+        except ModelResponseError as exc:
+            if not batch_summaries:
+                raise
+            fallback = _select_fallback_summary(tuple(batch_summaries), all_ids)
+            error_category = getattr(exc, "summary_failure_category", "batch_failed")
+            return SummaryOutcome(
+                fallback,
+                "fallback",
+                error_category if error_category in SUMMARY_FAILURE_CATEGORIES else "batch_failed",
+                attempt_count + int(getattr(exc, "attempt_count", MAX_SUMMARY_ATTEMPTS)),
+                "batch",
+            )
+        batch_summaries.append(summary)
+        attempt_count += attempts
+
+    if len(batch_summaries) == 1:
+        return SummaryOutcome(batch_summaries[0], "success", None, attempt_count)
+    outcome = _hierarchical_summarize(tuple(batch_summaries), runtime, all_ids)
+    return replace(outcome, attempt_count=attempt_count + outcome.attempt_count)
+
+
 def summarize_transcript(
     transcript: Transcript,
     runtime: QwenRuntime,
 ) -> Summary:
     """Return an evidence-linked summary from bounded transcript batches."""
-    _validate_inputs(transcript, runtime)
-    all_ids = {segment.segment_id for segment in transcript.segments}
-    batch_summaries: list[Summary] = []
-    for index in range(0, len(transcript.segments), MAX_SEGMENTS_PER_BATCH):
-        batch = transcript.segments[index : index + MAX_SEGMENTS_PER_BATCH]
-        batch_ids = {segment.segment_id for segment in batch}
-        batch_summaries.append(
-            _call_runtime(runtime, _build_batch_prompt(batch), batch_ids)
-        )
-
-    if len(batch_summaries) == 1:
-        return batch_summaries[0]
-    return _call_runtime(
-        runtime,
-        _build_final_prompt(tuple(batch_summaries)),
-        all_ids,
-    )
+    outcome = summarize_transcript_outcome(transcript, runtime)
+    if outcome.status == "fallback":
+        raise _fallback_error(outcome)
+    return outcome.summary
 
 
 def summarize_reviewed_transcript(
@@ -242,20 +604,7 @@ def summarize_reviewed_transcript(
     runtime: QwenRuntime,
 ) -> Summary:
     """Return an evidence-linked summary of approved, restored segment text."""
-    _validate_reviewed_inputs(transcript, runtime)
-    all_ids = {segment.source.segment_id for segment in transcript.segments}
-    batch_summaries: list[Summary] = []
-    for index in range(0, len(transcript.segments), MAX_SEGMENTS_PER_BATCH):
-        batch = transcript.segments[index : index + MAX_SEGMENTS_PER_BATCH]
-        batch_ids = {segment.source.segment_id for segment in batch}
-        batch_summaries.append(
-            _call_runtime(runtime, _build_reviewed_batch_prompt(batch), batch_ids)
-        )
-
-    if len(batch_summaries) == 1:
-        return batch_summaries[0]
-    return _call_runtime(
-        runtime,
-        _build_final_prompt(tuple(batch_summaries)),
-        all_ids,
-    )
+    outcome = summarize_reviewed_transcript_outcome(transcript, runtime)
+    if outcome.status == "fallback":
+        raise _fallback_error(outcome)
+    return outcome.summary

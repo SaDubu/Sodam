@@ -19,7 +19,7 @@ from .contracts import (
     UnsafePathError,
 )
 
-JOB_WORK_ROOT = pathlib.Path(r"D:\AI-Legion\Sodam-data\tmp\jobs")
+from .runtime_paths import JOB_WORK_ROOT
 
 
 # ---- internal helpers ----

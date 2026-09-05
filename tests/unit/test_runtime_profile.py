@@ -8,6 +8,7 @@ import pytest
 from backend.contracts import RuntimeProfile
 from backend.runtime_profile import (
     default_runtime_profile,
+    evaluate_runtime_readiness,
     load_runtime_profile,
     save_runtime_profile,
 )
@@ -78,3 +79,39 @@ def test_profile_rejects_non_profile_and_symlink_paths(tmp_path: Path) -> None:
         pytest.skip("symlink creation is unavailable on this Windows host")
     with pytest.raises(ValueError):
         load_runtime_profile(link)
+
+
+def test_readiness_reports_each_runtime_dependency_independently(tmp_path: Path) -> None:
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    ffmpeg.write_bytes(b"fixture")
+    stt = tmp_path / "stt"
+    stt.mkdir()
+    profile = RuntimeProfile(
+        "quality",
+        "qwen3.6:35b-a3b-agent-64k",
+        stt,
+        ffmpeg,
+        "http://127.0.0.1:11434/api/chat",
+        4096,
+    )
+    readiness = evaluate_runtime_readiness(
+        profile,
+        python_ready=True,
+        ollama_ready=True,
+        qwen_model_ready=False,
+    )
+    assert readiness.ffmpeg_ready is True
+    assert readiness.stt_model_ready is True
+    assert readiness.is_ready is False
+    assert readiness.required_actions == ("qwen3.6:35b-a3b-agent-64k 모델 준비",)
+
+
+def test_readiness_flags_require_booleans_without_side_effects(tmp_path: Path) -> None:
+    profile = default_runtime_profile("linux")
+    with pytest.raises(TypeError):
+        evaluate_runtime_readiness(
+            profile,
+            python_ready=1,  # type: ignore[arg-type]
+            ollama_ready=False,
+            qwen_model_ready=False,
+        )

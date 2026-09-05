@@ -33,7 +33,7 @@ function Get-DefaultGitPaths {
     if ($LASTEXITCODE -ne 0) {
         throw 'git ls-files failed.'
     }
-    $staged = @(& git -C $RepositoryRoot diff --cached --name-only)
+    $staged = @(& git -C $RepositoryRoot diff --cached --name-only --diff-filter=ACMR)
     if ($LASTEXITCODE -ne 0) {
         throw 'git diff --cached --name-only failed.'
     }
@@ -112,8 +112,11 @@ function Test-SodamRepositoryClean {
 
         $normalized = $relativePath.Replace('\\', '/').ToLowerInvariant()
         $extension = [System.IO.Path]::GetExtension($fullPath).ToLowerInvariant()
-        if ($normalized.StartsWith('models/') -and $normalized -ne 'models/manifest.json') {
+        if ($normalized.StartsWith('models/') -and $normalized -notin @('models/manifest.json', 'models/modelfile.qwen')) {
             Add-RepositoryViolation -Violations $violations -Path $relativePath -Reason 'unexpected_models_path'
+        }
+        if ($normalized -match '^(\.local/|docs/ai/|docs/[^/]*_failure_resolution_plan\.md$|statement_of_functions\.md$|agents\.md$)') {
+            Add-RepositoryViolation -Violations $violations -Path $relativePath -Reason 'private_work_document'
         }
         if ($script:ProhibitedExtensions -contains $extension) {
             Add-RepositoryViolation -Violations $violations -Path $relativePath -Reason ('prohibited_extension:' + $extension)

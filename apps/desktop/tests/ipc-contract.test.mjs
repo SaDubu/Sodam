@@ -8,8 +8,8 @@ const rust = fs.readFileSync(path.join(root, "src-tauri", "src", "lib.rs"), "utf
 const frontend = fs.readFileSync(path.join(root, "src", "main.ts"), "utf8");
 
 test("IPC commands validate structured requests and launch only the fixed Python backend", () => {
-  assert.match(rust, /fn shell_readiness\(\) -> ShellReadiness/);
-  assert.match(rust, /fn doctor_report\(\) -> Result<serde_json::Value, String>/);
+  assert.match(rust, /fn shell_readiness\([^)]*\) -> ShellReadiness/);
+  assert.match(rust, /fn doctor_report\([^)]*\) -> Result<serde_json::Value, String>/);
   assert.match(rust, /fn preflight_source\(path: String\) -> Result<SourcePreflight, String>/);
   assert.match(rust, /symlink_metadata\(candidate\)/);
   assert.match(rust, /metadata\.file_type\(\)\.is_symlink\(\)/);
@@ -30,6 +30,9 @@ test("IPC commands validate structured requests and launch only the fixed Python
   assert.match(rust, /MAX_STDERR_LINES/);
   assert.match(rust, /MAX_STDERR_CHARS/);
   assert.match(rust, /sanitize_stderr_line/);
+  assert.match(rust, /GENERATED_TEXT_PREFIX/);
+  assert.match(rust, /parse_generated_text_line/);
+  assert.match(rust, /"generated_text": generated_text/);
   assert.match(rust, /classify_stderr_tail/);
   assert.match(rust, /valid_backend_report/);
   assert.match(rust, /"category": category/);
@@ -53,6 +56,8 @@ test("IPC commands validate structured requests and launch only the fixed Python
   assert.match(frontend, /listen<BackendProgressEvent>\("progress"/);
   assert.match(frontend, /listen<\{ operation_id: string; report: JobReport \}>\("job_result"/);
   assert.match(frontend, /listen<\{ operation_id: string; error\?:/);
+  assert.match(frontend, /generated_text\?: string \| null/);
+  assert.match(frontend, /검토용 생성문장 \(품질 미달\)/);
   assert.match(frontend, /listen<\{ operation_id: string \}>\("job_cancelled"/);
   assert.match(frontend, /readiness\.textContent/);
 });

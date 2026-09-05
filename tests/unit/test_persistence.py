@@ -13,6 +13,7 @@ from backend.contracts import (
     ReviewedTranscript,
     StorageError,
     Summary,
+    SummaryOutcome,
     UnsafePathError,
     VideoIntroduction,
 )
@@ -41,10 +42,10 @@ def _result() -> tuple[Job, ReviewedTranscript, Summary, tuple[dict[str, str], .
 def _introduction() -> VideoIntroduction:
     return VideoIntroduction(
         "Reviewed video",
-        "Reviewed fixture 내용을 살펴봅니다. 실제 결과를 영상에서 확인하세요.",
+        "Reviewed fixture 내용을 살펴볼까요? 실제 결과를 영상에서 확인하세요.",
         ("Reviewed",),
         ("segment-0001",),
-        False,
+        True,
         "실제 결과를 영상에서 확인하세요.",
     )
 
@@ -83,6 +84,41 @@ def test_introduction_and_progress_artifacts_round_trip_without_replacing_summar
     assert (path / "summary.json").exists()
     assert (path / "introduction.json").exists()
     assert (path / "progress.jsonl").exists()
+
+
+def test_fallback_summary_round_trip_is_separate_from_normal_summary(tmp_path: Path) -> None:
+    job, transcript, summary, review = _result()
+    outcome = SummaryOutcome(summary, "fallback", "final_failed", 5, "reduce")
+
+    path = persist_result(
+        job,
+        transcript,
+        None,
+        review,
+        tmp_path / "fallback",
+        summary_outcome=outcome,
+    )
+    loaded = load_result(job.job_id, tmp_path / "fallback")
+
+    assert loaded.summary is None
+    assert loaded.summary_outcome == outcome
+    assert not (path / "summary.json").exists()
+    assert (path / "summary_fallback.json").exists()
+
+
+def test_persistence_rejects_normal_and_fallback_summary_together(tmp_path: Path) -> None:
+    job, transcript, summary, review = _result()
+    outcome = SummaryOutcome(summary, "fallback", "final_failed", 2, "reduce")
+
+    with pytest.raises(StorageError):
+        persist_result(
+            job,
+            transcript,
+            summary,
+            review,
+            tmp_path / "ambiguous",
+            summary_outcome=outcome,
+        )
 
 
 def test_introduction_only_result_is_reopenable(tmp_path: Path) -> None:
@@ -245,6 +281,29 @@ def test_review_location_round_trip_and_malformed_location_rejection(tmp_path: P
     )
     with pytest.raises(StorageError):
         load_result(job.job_id, root)
+
+
+def test_generated_review_spans_round_trip_and_change_only_second_occurrence(tmp_path: Path) -> None:
+    from backend.main import _review_locations_from_spans
+    from backend.protection import protect_tokens, restore_tokens
+    from backend.validation import validate_revision
+
+    raw = RawSegment("segment-0001", 0.0, 1.0, "고장 SUV 고장")
+    protected = protect_tokens([raw], ())
+    prefix, _ = protected.text.rsplit("고장", 1)
+    review = validate_revision(protected.text, prefix + "수리", protected)
+    approved = restore_tokens(protected, review.approved_text)
+    locations = _review_locations_from_spans(raw.segment_id, approved, review.review_items, review.review_spans, 0)
+    transcript = ReviewedTranscript((ReviewedSegment(raw, approved),), approved)
+    job = Job("r4-span-round-trip", "fixture", "archived", Path("C:/tmp/ignored"), JobOptions())
+    root = tmp_path / "results"
+    persist_result(job, transcript, Summary("Fixture summary.", (raw.segment_id,)), review.review_items, root, locations)
+    assert load_result(job.job_id, root).review_locations == locations
+    record_review_decision(job.job_id, 0, "accept_suggested", "수리", root)
+    loaded = load_result(job.job_id, root)
+    assert loaded.resolved_transcript.final_text == "고장 SUV 수리"
+    assert loaded.transcript.final_text == "고장 SUV 고장"
+    assert loaded.applied_review_indices == (0,)
 
 
 def test_resolved_projection_applies_ordered_locations_and_marks_summary_stale(tmp_path: Path) -> None:

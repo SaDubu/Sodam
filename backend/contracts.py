@@ -30,6 +30,13 @@ JobStatus = Literal[
 
 OutputMode = Literal["summary", "introduction", "both"]
 
+SummaryFailureCategory = Literal[
+    "batch_failed",
+    "reduce_failed",
+    "final_failed",
+    "retry_exhausted",
+]
+
 ProgressScope = Literal["setup", "job"]
 
 ProgressStage = Literal[
@@ -101,6 +108,16 @@ class NormalizationError(SodamError):
 
 class TranscriptAssemblyError(SodamError):
     """Raised when transcript segments cannot form a valid chronological transcript."""
+
+
+class ReviewMappingError(TranscriptAssemblyError):
+    """Review coordinates cannot be safely applied to their source segment."""
+
+    def __init__(self, diagnostic_code: str, segment_id: str | None = None) -> None:
+        super().__init__("review coordinates do not match the source contract")
+        self.diagnostic_code = diagnostic_code
+        self.segment_id = segment_id
+        self.stage = "review_validation"
 
 
 class EmptyTranscriptError(SodamError):
@@ -234,16 +251,26 @@ class CorrectionResult:
 
 
 @dataclass(frozen=True)
+class ReviewSpan:
+    """A review item's range in restored source text; insertions have no range."""
+
+    start_offset: int | None
+    end_offset: int | None
+
+
+@dataclass(frozen=True)
 class ReviewResult:
     """Human review result after examining a correction batch.
 
     Attributes:
         approved_text: The final text after the reviewer's acceptance.
         review_items: Per-item records containing the reviewer's notes or approvals.
+        review_spans: Source-coordinate ranges aligned with review_items.
     """
 
     approved_text: str
     review_items: tuple[dict[str, str], ...] = ()
+    review_spans: tuple[ReviewSpan, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -330,13 +357,31 @@ class Highlight:
 
 
 @dataclass(frozen=True)
+class SummaryOutcome:
+    """A validated Summary together with success or review-only fallback state."""
+
+    summary: Summary
+    status: Literal["success", "fallback"]
+    failure_category: str | None = None
+    attempt_count: int = 1
+    fallback_source: Literal["batch", "reduce"] | None = None
+
+
+@dataclass(frozen=True)
 class IntroductionOptions:
     """Style limits for a video introduction without changing summary behavior."""
 
     minimum_body_sentences: int = 2
     maximum_body_sentences: int = 3
-    maximum_questions: int = 1
+    maximum_questions: int | None = None
     exclude_promotional_segments: bool = True
+    require_first_question: bool = False
+
+
+# Generation follows the current prompt; archived results retain legacy defaults.
+INTRODUCTION_GENERATION_OPTIONS = IntroductionOptions(
+    minimum_body_sentences=3, maximum_body_sentences=3, require_first_question=True
+)
 
 
 @dataclass(frozen=True)

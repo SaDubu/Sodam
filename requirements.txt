@@ -1,0 +1,3 @@
+# Sodam runtime. Hermes is installed separately to isolate agent dependencies.
+faster-whisper>=1.1,<2
+yt-dlp[default]>=2025.1.1

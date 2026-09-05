@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 import json
 from pathlib import Path
 import subprocess
+import sys
 from urllib import request
 from urllib.parse import urlsplit
 
@@ -11,8 +12,9 @@ from .contracts import InputSourceError
 from .sources import validate_source
 
 
-DEFAULT_YTDLP_PYTHON = r"D:\AI-Legion\Sodam-runtime\Scripts\python.exe"
+DEFAULT_YTDLP_PYTHON = sys.executable
 DEFAULT_QWEN_MODEL = "qwen3.6:35b-a3b-agent-64k"
+MAX_QWEN_TIMEOUT_SECONDS = 600
 
 
 def _run_ytdlp(command: Sequence[str]) -> None:
@@ -101,7 +103,7 @@ class LocalOllamaRuntime:
         self,
         model: str = DEFAULT_QWEN_MODEL,
         endpoint: str = "http://127.0.0.1:11434/api/chat",
-        timeout_seconds: int = 120,
+        timeout_seconds: int = MAX_QWEN_TIMEOUT_SECONDS,
         context_tokens: int = 32768,
     ) -> None:
         if not isinstance(model, str) or not model.strip():
@@ -109,9 +111,11 @@ class LocalOllamaRuntime:
         if (
             isinstance(timeout_seconds, bool)
             or not isinstance(timeout_seconds, int)
-            or timeout_seconds <= 0
+            or not 1 <= timeout_seconds <= MAX_QWEN_TIMEOUT_SECONDS
         ):
-            raise ValueError("timeout_seconds must be a positive int")
+            raise ValueError(
+                f"timeout_seconds must be an int from 1 to {MAX_QWEN_TIMEOUT_SECONDS}"
+            )
         if (
             isinstance(context_tokens, bool)
             or not isinstance(context_tokens, int)

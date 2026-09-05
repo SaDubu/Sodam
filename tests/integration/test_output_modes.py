@@ -32,11 +32,11 @@ class Runtime:
         if "Target text:" in prompt:
             target = json.loads(prompt.rsplit("\n", 1)[-1])
             return json.dumps({"corrected_text": target, "changes": [], "requires_review": False})
-        if "영상 소개글 편집자" in prompt:
+        if "[소개글 핵심 구조]" in prompt:
             return json.dumps(
                 {
                     "title_hook": "OpenAI fixture의 숨은 포인트",
-                    "body": "OpenAI fixture line에서 놓치기 쉬운 포인트를 살펴볼까요? 실제 내용을 영상에서 확인해 보세요.",
+                    "body": "OpenAI fixture line에서 놓치기 쉬운 포인트를 살펴볼까요? OpenAI fixture line을 살펴봅니다. 실제 내용을 영상에서 확인해 보세요.",
                     "highlights": ["OpenAI"],
                     "evidence_segment_ids": ["segment-0001"],
                     "question_used": True,

@@ -235,6 +235,46 @@ def _edit_response(
     )
 
 
+def _multi_plan_group() -> tuple[EditableTextPlan, ...]:
+    return (
+        EditableTextPlan(
+            "s1",
+            (
+                EditablePart("s1:editable:0000", "first "),
+                LockedPart("s1:locked:0000", "JFK"),
+            ),
+            "first JFK",
+        ),
+        EditableTextPlan(
+            "s2",
+            (
+                EditablePart("s2:editable:0000", "second "),
+                LockedPart("s2:locked:0000", "OpenAI"),
+            ),
+            "second OpenAI",
+        ),
+    )
+
+
+def test_correct_with_retry_scopes_replacements_to_each_plan() -> None:
+    group = _multi_plan_group()
+    response = json.dumps(
+        {
+            "edits": [
+                {"editable_id": "s1:editable:0000", "replacement": "FIRST "},
+                {"editable_id": "s2:editable:0000", "replacement": "SECOND "},
+            ],
+            "requires_review": False,
+        }
+    )
+
+    outcome = correct_with_retry(group, (), RecordingRuntime(response))  # type: ignore[arg-type]
+
+    assert outcome.text == "FIRST JFK\nSECOND OpenAI"
+    assert outcome.identity_applied is False
+    assert len(outcome.edits) == 2
+
+
 def test_validate_edit_proposal_accepts_editable_ids_only() -> None:
     edits, requires_review = validate_edit_proposal(
         _plan_group(),

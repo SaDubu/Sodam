@@ -10,6 +10,7 @@ import pytest
 from backend.contracts import InputSourceError
 from backend.local_adapters import (
     DEFAULT_QWEN_MODEL,
+    MAX_QWEN_TIMEOUT_SECONDS,
     LocalFasterWhisperEngine,
     LocalFfmpegRunner,
     LocalOllamaRuntime,
@@ -104,7 +105,7 @@ def test_ollama_runtime_posts_one_utf8_json_request(monkeypatch: pytest.MonkeyPa
             "options": {"temperature": 0, "num_ctx": 32768},
             "messages": [{"role": "user", "content": "hello"}],
         },
-        "timeout": 120,
+        "timeout": MAX_QWEN_TIMEOUT_SECONDS,
     }
     with pytest.raises(ValueError):
         LocalOllamaRuntime(endpoint="https://example.com/api/chat")
@@ -113,6 +114,18 @@ def test_ollama_runtime_posts_one_utf8_json_request(monkeypatch: pytest.MonkeyPa
     assert runtime.context_tokens == 4096
     with pytest.raises(ValueError):
         LocalOllamaRuntime(context_tokens=512)
+
+
+@pytest.mark.parametrize("timeout_seconds", [1, MAX_QWEN_TIMEOUT_SECONDS])
+def test_ollama_runtime_accepts_bounded_timeout(timeout_seconds: int) -> None:
+    runtime = LocalOllamaRuntime(timeout_seconds=timeout_seconds)
+    assert runtime.timeout_seconds == timeout_seconds
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, -1, MAX_QWEN_TIMEOUT_SECONDS + 1, True, "600"])
+def test_ollama_runtime_rejects_invalid_timeout(timeout_seconds: object) -> None:
+    with pytest.raises(ValueError):
+        LocalOllamaRuntime(timeout_seconds=timeout_seconds)  # type: ignore[arg-type]
 
 
 def test_rejecting_url_adapter_never_writes(tmp_path: Path) -> None:

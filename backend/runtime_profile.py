@@ -1,12 +1,14 @@
 """Validated local runtime-profile persistence and model selection."""
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 import os
 import tempfile
 from urllib.parse import urlsplit
 
 from .contracts import RuntimeProfile
+from .runtime_paths import STT_MODEL_PATH
 
 
 _DEFAULT_MODEL = "qwen3.6:35b-a3b-agent-64k"
@@ -19,6 +21,66 @@ _PROFILE_KEYS = {
     "ollama_endpoint",
     "qwen_context_tokens",
 }
+
+
+@dataclass(frozen=True)
+class RuntimeReadiness:
+    """Safe, path-free readiness facts consumed by the desktop doctor."""
+
+    python_ready: bool
+    ffmpeg_ready: bool
+    stt_model_ready: bool
+    ollama_ready: bool
+    qwen_model_ready: bool
+    required_actions: tuple[str, ...]
+
+    @property
+    def is_ready(self) -> bool:
+        return all(
+            (
+                self.python_ready,
+                self.ffmpeg_ready,
+                self.stt_model_ready,
+                self.ollama_ready,
+                self.qwen_model_ready,
+            )
+        )
+
+
+def evaluate_runtime_readiness(
+    profile: RuntimeProfile,
+    *,
+    python_ready: bool,
+    ollama_ready: bool,
+    qwen_model_ready: bool,
+) -> RuntimeReadiness:
+    """Evaluate local readiness without starting processes or contacting models."""
+    _validate_profile(profile)
+    if not isinstance(python_ready, bool) or not isinstance(ollama_ready, bool):
+        raise TypeError("readiness flags must be bool")
+    if not isinstance(qwen_model_ready, bool):
+        raise TypeError("readiness flags must be bool")
+    ffmpeg_ready = profile.ffmpeg_path.is_file()
+    stt_model_ready = profile.stt_model_path.is_dir()
+    actions: list[str] = []
+    if not python_ready:
+        actions.append("Python 실행 환경 설정")
+    if not ffmpeg_ready:
+        actions.append("FFmpeg 실행 파일 경로 설정")
+    if not stt_model_ready:
+        actions.append("faster-whisper 모델 경로 설정")
+    if not ollama_ready:
+        actions.append("Ollama를 127.0.0.1:11434에서 실행")
+    if not qwen_model_ready:
+        actions.append(f"{profile.qwen_model} 모델 준비")
+    return RuntimeReadiness(
+        python_ready,
+        ffmpeg_ready,
+        stt_model_ready,
+        ollama_ready,
+        qwen_model_ready,
+        tuple(actions),
+    )
 
 
 def _validate_endpoint(endpoint: object) -> str:
@@ -70,7 +132,7 @@ def default_runtime_profile(system_name: str) -> RuntimeProfile:
     if normalized not in {"windows", "linux", "darwin"}:
         raise ValueError("unsupported system_name")
     if normalized == "windows":
-        stt = Path(r"D:\AI-Legion\Sodam-models\faster-whisper\turbo-0a363e9")
+        stt = STT_MODEL_PATH
         ffmpeg = Path("ffmpeg.exe")
     else:
         stt = Path.home() / ".local" / "share" / "sodam" / "models" / "faster-whisper"

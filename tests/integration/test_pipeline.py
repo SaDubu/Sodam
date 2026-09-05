@@ -176,6 +176,24 @@ def test_local_success_runs_injected_collaborators_then_archives_and_cleans(job:
     assert not job.work_dir.exists()
 
 
+def test_multi_plan_correction_scopes_replacements_and_reaches_review(job: Job) -> None:
+    runtime = ReviewRuntime()
+    result = _application(
+        RecordingSourceAdapter(),
+        RecordingRunner(),
+        RecordingSttEngine(("OpenAI fixture first.", "OpenAI fixture second.")),
+        runtime,
+    ).run(job)
+
+    assert result.job.status == "archived"
+    assert result.transcript is not None
+    assert result.transcript.final_text == "OpenAI fixture first.\nOpenAI fixture second."
+    assert result.review_items
+    assert result.correction_group_count == 1
+    assert result.identity_group_count == 0
+    assert not job.work_dir.exists()
+
+
 def test_start_cancellation_archives_and_cleans_without_collaborator_calls(job: Job) -> None:
     source_adapter = RecordingSourceAdapter()
     runner = RecordingRunner()
@@ -248,6 +266,115 @@ def test_location_helper_uses_occurrence_order_and_null_for_insertions() -> None
         {"review_index": 5, "segment_id": "segment-0001", "start_offset": 4, "end_offset": 7},
         {"review_index": 6, "segment_id": "segment-0001", "start_offset": None, "end_offset": None},
     )
+
+
+def test_span_locations_select_later_occurrence_without_search() -> None:
+    from backend.contracts import ReviewSpan
+    from backend.main import _review_locations_from_spans
+
+    items = (
+        {"raw": "고장", "corrected": "수리"},
+        {"raw": "", "corrected": "추가"},
+    )
+    assert _review_locations_from_spans(
+        "s1", "고장 SUV 고장", items, (ReviewSpan(7, 9), ReviewSpan(None, None)), 4
+    ) == (
+        {"review_index": 4, "segment_id": "s1", "start_offset": 7, "end_offset": 9},
+        {"review_index": 5, "segment_id": "s1", "start_offset": None, "end_offset": None},
+    )
+
+
+@pytest.mark.parametrize("offsets,code", [
+    (None, "review_span_count_invalid"),
+    ((None, None), "review_span_range_invalid"),
+    ((True, 2), "review_span_range_invalid"),
+    ((-1, 2), "review_span_range_invalid"),
+    ((0, 20), "review_span_range_invalid"),
+    ((2, 1), "review_span_range_invalid"),
+    ((0, 0), "review_span_range_invalid"),
+    ((0, 2), "review_location_mismatch"),
+])
+def test_span_location_errors_are_specific(offsets, code) -> None:
+    from backend.contracts import ReviewMappingError, ReviewSpan
+    from backend.main import _review_locations_from_spans
+
+    spans = () if offsets is None else (ReviewSpan(*offsets),)
+    with pytest.raises(ReviewMappingError) as caught:
+        _review_locations_from_spans("s1", "정상", ({"raw": "고장"},), spans, 0)
+    assert caught.value.diagnostic_code == code
+    assert caught.value.segment_id == "s1"
+
+
+def test_non_null_insertion_and_overlapping_spans_are_rejected() -> None:
+    from backend.contracts import ReviewMappingError, ReviewSpan
+    from backend.main import _review_locations_from_spans
+
+    with pytest.raises(ReviewMappingError):
+        _review_locations_from_spans("s1", "고장", ({"raw": ""},), (ReviewSpan(0, 0),), 0)
+    with pytest.raises(ReviewMappingError):
+        _review_locations_from_spans(
+            "s1", "고장", ({"raw": "고장"}, {"raw": "고장"}), (ReviewSpan(0, 2),) * 2, 0
+        )
+
+
+def test_review_across_locked_boundary_reaches_generation_and_keeps_source(job: Job) -> None:
+    phrase = "서킷의 코너에서 차체 움직임과 핸들링을 직접 자세하게 확인합니다"
+    source = phrase + " SUV 시승"
+
+    class BoundaryRuntime(PipelineRuntime):
+        def complete(self, prompt: str) -> str:
+            if "Plans:" not in prompt:
+                return super().complete(prompt)
+            self.prompts.append(prompt)
+            plan = json.loads(prompt.rsplit("\n", 1)[-1])
+            editable = [part for part in plan["parts"] if part["kind"] == "editable"]
+            assert len(editable) == 2
+            return json.dumps({
+                "edits": [
+                    {"editable_id": editable[0]["part_id"], "replacement": "시승 "},
+                    {"editable_id": editable[1]["part_id"], "replacement": " " + phrase},
+                ],
+                "requires_review": True,
+            }, ensure_ascii=False)
+
+    runtime = BoundaryRuntime()
+    result = _application(
+        RecordingSourceAdapter(), RecordingRunner(), RecordingSttEngine((source,)), runtime
+    ).run(job)
+    assert result.job.status == "archived"
+    assert result.summary is not None
+    assert result.transcript.final_text == source
+    assert result.review_items
+    for item, location in zip(result.review_items, result.review_locations):
+        assert "SODAM_PROTECTED" not in item["raw"] + item["corrected"]
+        if item["raw"]:
+            assert source[location["start_offset"]:location["end_offset"]] == item["raw"]
+    assert len(runtime.prompts) == 2
+
+
+@pytest.mark.parametrize("protection_failure", [False, True])
+def test_review_failure_preserves_segment_context_and_does_not_generate(job, monkeypatch, protection_failure) -> None:
+    from backend.contracts import ProtectionError, ReviewMappingError, ReviewResult
+    import backend.main as main
+
+    error = ProtectionError("private transcript")
+
+    def invalid_review(raw, corrected, protections):
+        if protection_failure:
+            raise error
+        return ReviewResult(raw, ({"raw": "fixture"},))
+
+    monkeypatch.setattr(main, "validate_revision", invalid_review)
+    runtime = PipelineRuntime()
+    with pytest.raises(ProtectionError if protection_failure else ReviewMappingError) as caught:
+        _application(RecordingSourceAdapter(), RecordingRunner(), RecordingSttEngine(), runtime).run(job)
+    if protection_failure:
+        assert caught.value is error
+    else:
+        assert caught.value.diagnostic_code == "review_span_count_invalid"
+    assert caught.value.segment_id == "segment-0001"
+    assert caught.value.stage == "review_validation"
+    assert len(runtime.prompts) == 1
 
 
 def test_correction_groups_preserve_order_and_respect_budget(job: Job) -> None:

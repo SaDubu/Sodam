@@ -22,6 +22,7 @@ from .contracts import (
     ReviewedTranscript,
     StorageError,
     Summary,
+    SummaryOutcome,
     Transcript,
     TranscriptAssemblyError,
     UnsafePathError,
@@ -34,7 +35,7 @@ from .storage import assemble_reviewed_transcript, assemble_transcript
 from .summarization import summarize_reviewed_transcript
 
 
-RESULT_ROOT = Path(r"D:\AI-Legion\Sodam-data\jobs")
+from .runtime_paths import RESULT_ROOT
 SCHEMA_VERSION = 1
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _REVIEW_KEYS = frozenset({"kind", "raw", "corrected", "reason"})
@@ -62,6 +63,7 @@ class PersistedResult:
     unapplied_review_indices: tuple[int, ...] = ()
     summary_is_stale: bool = False
     resolved_summary: Summary | None = None
+    summary_outcome: SummaryOutcome | None = None
 
 
 @dataclass(frozen=True)
@@ -179,6 +181,7 @@ def _validated_result_inputs(
     review_items: tuple[dict[str, str], ...],
     review_locations: tuple[dict[str, object], ...],
     introduction: VideoIntroduction | None,
+    summary_outcome: SummaryOutcome | None,
 ) -> tuple[Transcript, tuple[dict[str, str], ...], tuple[dict[str, object], ...]]:
     if not isinstance(job, Job):
         raise TypeError("job must be a Job")
@@ -193,8 +196,14 @@ def _validated_result_inputs(
         raise TypeError("summary must be a Summary or None")
     if introduction is not None and not isinstance(introduction, VideoIntroduction):
         raise TypeError("introduction must be a VideoIntroduction or None")
-    if summary is None and introduction is None:
+    if summary is None and introduction is None and summary_outcome is None:
         raise StorageError("at least one summary or introduction is required")
+    if summary_outcome is not None:
+        _validate_summary_outcome(summary_outcome)
+        if summary_outcome.status == "success" and summary != summary_outcome.summary:
+            raise StorageError("successful summary outcome must match summary")
+        if summary_outcome.status == "fallback" and summary is not None:
+            raise StorageError("fallback outcome must not be persisted as summary")
     if not transcript.segments:
         raise StorageError("completed transcript must contain segments")
 
@@ -205,14 +214,17 @@ def _validated_result_inputs(
     )
     if rebuilt != transcript:
         raise StorageError("reviewed transcript is not a valid source-aligned transcript")
-    if summary is not None:
-        if not isinstance(summary.text, str) or not summary.text.strip():
+    summary_to_validate = summary
+    if summary_to_validate is None and summary_outcome is not None:
+        summary_to_validate = summary_outcome.summary
+    if summary_to_validate is not None:
+        if not isinstance(summary_to_validate.text, str) or not summary_to_validate.text.strip():
             raise StorageError("summary.text must be a non-blank string")
         if (
-            not isinstance(summary.evidence_segment_ids, tuple)
-            or not summary.evidence_segment_ids
-            or len(set(summary.evidence_segment_ids)) != len(summary.evidence_segment_ids)
-            or any(item not in {segment.segment_id for segment in raw.segments} for item in summary.evidence_segment_ids)
+            not isinstance(summary_to_validate.evidence_segment_ids, tuple)
+            or not summary_to_validate.evidence_segment_ids
+            or len(set(summary_to_validate.evidence_segment_ids)) != len(summary_to_validate.evidence_segment_ids)
+            or any(item not in {segment.segment_id for segment in raw.segments} for item in summary_to_validate.evidence_segment_ids)
         ):
             raise StorageError("summary evidence IDs must be unique transcript segment IDs")
     if introduction is not None:
@@ -304,10 +316,17 @@ def persist_result(
     review_locations: tuple[dict[str, object], ...] = (),
     introduction: VideoIntroduction | None = None,
     progress_events: tuple[ProgressEvent, ...] = (),
+    summary_outcome: SummaryOutcome | None = None,
 ) -> Path:
     """Atomically publish a schema-v1 completed result without overwriting one."""
     raw, copied_review, copied_locations = _validated_result_inputs(
-        job, transcript, summary, review_items, review_locations, introduction
+        job,
+        transcript,
+        summary,
+        review_items,
+        review_locations,
+        introduction,
+        summary_outcome,
     )
     if not isinstance(progress_events, tuple) or any(
         not isinstance(event, ProgressEvent) for event in progress_events
@@ -343,6 +362,8 @@ def persist_result(
             "text": summary.text,
             "evidence_segment_ids": list(summary.evidence_segment_ids),
         }
+    if summary_outcome is not None and summary_outcome.status == "fallback":
+        payloads["summary_fallback.json"] = _summary_outcome_payload(summary_outcome)
     if introduction is not None:
         payloads["introduction.json"] = _introduction_payload(introduction)
     if progress_events:
@@ -488,6 +509,73 @@ def _summary_from_payload(payload: object, segment_ids: set[str]) -> Summary:
     ):
         raise StorageError("summary evidence is invalid")
     return Summary(text, tuple(evidence))
+
+
+_SUMMARY_FAILURE_CATEGORIES = frozenset(
+    {"batch_failed", "reduce_failed", "final_failed", "retry_exhausted"}
+)
+_SUMMARY_FALLBACK_SOURCES = frozenset({"batch", "reduce"})
+
+
+def _validate_summary_outcome(outcome: SummaryOutcome) -> None:
+    """Validate outcome metadata before it crosses the persistence boundary."""
+    if not isinstance(outcome, SummaryOutcome):
+        raise TypeError("summary_outcome must be a SummaryOutcome or None")
+    if not isinstance(outcome.summary, Summary):
+        raise StorageError("summary outcome payload is invalid")
+    if outcome.status == "success":
+        if outcome.failure_category is not None or outcome.fallback_source is not None:
+            raise StorageError("successful summary cannot contain fallback metadata")
+    elif outcome.status == "fallback":
+        if outcome.failure_category not in _SUMMARY_FAILURE_CATEGORIES:
+            raise StorageError("summary fallback category is invalid")
+        if outcome.fallback_source not in _SUMMARY_FALLBACK_SOURCES:
+            raise StorageError("summary fallback source is invalid")
+    else:
+        raise StorageError("summary outcome status is invalid")
+    if (
+        isinstance(outcome.attempt_count, bool)
+        or not isinstance(outcome.attempt_count, int)
+        or outcome.attempt_count < 1
+    ):
+        raise StorageError("summary attempt count is invalid")
+
+
+def _summary_outcome_payload(outcome: SummaryOutcome) -> dict[str, object]:
+    """Serialize bounded metadata and validated summary content only."""
+    _validate_summary_outcome(outcome)
+    return {
+        "status": outcome.status,
+        "failure_category": outcome.failure_category,
+        "attempt_count": outcome.attempt_count,
+        "fallback_source": outcome.fallback_source,
+        "summary": {
+            "text": outcome.summary.text,
+            "evidence_segment_ids": list(outcome.summary.evidence_segment_ids),
+        },
+    }
+
+
+def _summary_outcome_from_payload(
+    payload: object,
+    segment_ids: set[str],
+) -> SummaryOutcome:
+    """Read a fallback outcome while rejecting ambiguous schemas."""
+    if not isinstance(payload, dict) or set(payload) != {
+        "status", "failure_category", "attempt_count", "fallback_source", "summary"
+    }:
+        raise StorageError("summary fallback schema is invalid")
+    outcome = SummaryOutcome(
+        summary=_summary_from_payload(payload["summary"], segment_ids),
+        status=payload["status"],  # type: ignore[arg-type]
+        failure_category=payload["failure_category"],
+        attempt_count=payload["attempt_count"],
+        fallback_source=payload["fallback_source"],  # type: ignore[arg-type]
+    )
+    _validate_summary_outcome(outcome)
+    if outcome.status != "fallback":
+        raise StorageError("summary fallback artifact must have fallback status")
+    return outcome
 
 
 def _introduction_from_payload(
@@ -712,6 +800,12 @@ def load_result(job_id: str, result_root: Path | str = RESULT_ROOT) -> Persisted
     review_payload = _read_json(target, "review.json")
     summary_path = target / "summary.json"
     summary_payload = _read_json(target, "summary.json") if summary_path.exists() or summary_path.is_symlink() else None
+    fallback_path = target / "summary_fallback.json"
+    fallback_payload = (
+        _read_json(target, "summary_fallback.json")
+        if fallback_path.exists() or fallback_path.is_symlink()
+        else None
+    )
     introduction_path = target / "introduction.json"
     introduction_payload = (
         _read_json(target, "introduction.json")
@@ -765,10 +859,17 @@ def load_result(job_id: str, result_root: Path | str = RESULT_ROOT) -> Persisted
     if len(sources) != len(raw.segments) or tuple(sources) != raw.segments or reviewed.final_text != reviewed_payload["final_text"]:
         raise StorageError("reviewed transcript alignment is invalid")
 
+    if summary_payload is not None and fallback_payload is not None:
+        raise StorageError("result cannot contain both normal and fallback summaries")
     base_summary = None if summary_payload is None else _summary_from_payload(summary_payload, set(by_id))
+    summary_outcome = (
+        None
+        if fallback_payload is None
+        else _summary_outcome_from_payload(fallback_payload, set(by_id))
+    )
     introduction = None if introduction_payload is None else _introduction_from_payload(introduction_payload, reviewed)
     progress_events = _load_progress_events(target)
-    if base_summary is None and introduction is None:
+    if base_summary is None and summary_outcome is None and introduction is None:
         raise StorageError("persisted result has no summary or introduction")
     if not isinstance(review_payload, dict) or set(review_payload) != {"review_items"} or not isinstance(review_payload["review_items"], list):
         raise StorageError("review schema is invalid")
@@ -797,4 +898,5 @@ def load_result(job_id: str, result_root: Path | str = RESULT_ROOT) -> Persisted
             resolved.final_text != reviewed.final_text and resolved_summary is None
         ),
         resolved_summary=resolved_summary,
+        summary_outcome=summary_outcome,
     )

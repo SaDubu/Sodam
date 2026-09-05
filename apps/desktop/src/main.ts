@@ -36,6 +36,7 @@ app.innerHTML = `
     </section>
     <p id="ipc-readiness" role="status">IPC 확인 중</p>
     <p id="doctor-readiness" role="status">환경 확인 중</p>
+    <ul id="doctor-details" aria-label="환경 진단 상세"></ul>
     <p id="preflight-result" role="status"></p>
     <section aria-labelledby="result-title" class="results">
       <h2 id="result-title">결과</h2>
@@ -58,6 +59,7 @@ const $ = <T extends HTMLElement>(selector: string): T => {
 
 const readiness = $("#ipc-readiness");
 const doctorReadiness = $("#doctor-readiness");
+const doctorDetails = $("#doctor-details");
 const selectedSource = $("#selected-source");
 const sourceButton = $("#select-source") as HTMLButtonElement;
 const preflightResult = $("#preflight-result");
@@ -75,7 +77,16 @@ const resilienceSummary = $("#resilience-summary");
 const resultPanel = $("#result-panel");
 
 interface ShellReadiness { shell_version: string; backend_connected: boolean; message: string; }
-interface DoctorReport { is_ready: boolean; required_actions: unknown[]; }
+interface DoctorReport {
+  is_ready: boolean;
+  backend_resource_ready: boolean;
+  python_ready: boolean;
+  ffmpeg_ready: boolean;
+  stt_model_ready: boolean;
+  ollama_ready: boolean;
+  qwen_model_ready: boolean;
+  required_actions: unknown[];
+}
 interface ResilienceReport {
   correction_group_count: number;
   correction_attempt_count: number;
@@ -92,6 +103,7 @@ interface JobReport {
   review_item_count?: number;
   result_path?: string;
   resilience?: ResilienceReport;
+  failure?: { generated_text?: string | null };
 }
 let selectedSourcePath: string | null = null;
 let operationId: string | null = null;
@@ -99,9 +111,36 @@ let progress: ProgressViewState = createInitialProgressState();
 let latestReport: JobReport | null = null;
 let activeTab = "transcript";
 
+function renderDoctorReport(report: DoctorReport): void {
+  const checks: Array<[string, boolean]> = [
+    ["backend 리소스", report.backend_resource_ready],
+    ["Python", report.python_ready],
+    ["FFmpeg", report.ffmpeg_ready],
+    ["STT 모델", report.stt_model_ready],
+    ["Ollama", report.ollama_ready],
+    ["Qwen 모델", report.qwen_model_ready],
+  ];
+  doctorDetails.replaceChildren(...checks.map(([label, ready]) => {
+    const item = document.createElement("li");
+    item.textContent = label + ": " + (ready ? "준비됨" : "준비 필요");
+    return item;
+  }));
+  const actions = report.required_actions.filter((value): value is string => typeof value === "string" && value.trim() !== "");
+  if (actions.length > 0) {
+    const actionItem = document.createElement("li");
+    actionItem.textContent = "조치: " + actions.join(" · ");
+    doctorDetails.append(actionItem);
+  }
+}
+
 function renderResultTab(tab: string): void {
   if (latestReport === null) {
     resultPanel.textContent = "작업을 시작하면 결과가 표시됩니다.";
+    return;
+  }
+  const failedCandidate = latestReport.failure?.generated_text;
+  if (typeof failedCandidate === "string" && failedCandidate.trim() !== "") {
+    resultPanel.textContent = "검토용 생성문장 (품질 미달)\n\n" + failedCandidate;
     return;
   }
   if (tab === "transcript") resultPanel.textContent = latestReport.transcript ?? "전사 결과가 없습니다.";
@@ -141,7 +180,8 @@ void invoke<ShellReadiness>("shell_readiness").then((report) => {
   readiness.textContent = `${report.message} (shell ${report.shell_version})`;
 }).catch(() => { readiness.textContent = "IPC 준비 상태를 확인할 수 없습니다."; });
 void invoke<DoctorReport>("doctor_report").then((report) => {
-  doctorReadiness.textContent = report.is_ready ? "환경 준비됨" : `준비 필요: ${report.required_actions.length}개 항목`;
+  doctorReadiness.textContent = report.is_ready ? "환경 준비됨" : "준비 필요: " + report.required_actions.length + "개 항목";
+  renderDoctorReport(report);
 }).catch(() => { doctorReadiness.textContent = "환경 진단을 확인할 수 없습니다."; });
 
 sourceButton.addEventListener("click", () => {
@@ -207,10 +247,11 @@ void listen<{ operation_id: string; report: JobReport }>("job_result", (event) =
   renderResultTab(activeTab);
 });
 
-void listen<{ operation_id: string; error?: { code?: string; category?: string; message?: string } }>("job_failed", (event) => {
+void listen<{ operation_id: string; error?: { code?: string; category?: string; message?: string; generated_text?: string | null } }>("job_failed", (event) => {
   if (operationId !== null && event.payload.operation_id !== operationId) return;
   operationId = null;
   const error = event.payload.error;
+  latestReport = { failure: { generated_text: error?.generated_text ?? null } };
   const category = error?.category ?? error?.code ?? "runtime_error";
   progress = {
     ...progress,

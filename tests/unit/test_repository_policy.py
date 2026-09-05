@@ -98,3 +98,17 @@ def test_inspection_does_not_modify_provider_files(tmp_path: Path) -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert hashlib.sha256(artifact.read_bytes()).digest() == before
+
+
+def test_private_work_documents_are_rejected_but_model_recipe_is_allowed(tmp_path: Path) -> None:
+    paths = [".local/work-docs/note.md", "docs/ai/plan.md", "AGENTS.md", "Statement_of_Functions.md", "models/Modelfile.qwen"]
+    for relative in paths:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture", encoding="utf-8")
+    completed = _run_check(tmp_path, paths)
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout)
+    assert {(item["path"], item["reason"]) for item in report["violations"]} == {
+        (path, "private_work_document") for path in paths[:-1]
+    }
